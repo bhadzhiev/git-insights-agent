@@ -1,0 +1,61 @@
+# Example OpenRouter.ai configurations with different models
+# OpenRouter provides access to multiple AI models through a unified API
+
+repositories:
+  - url: "https://github.com/your-org/your-repo.git"
+    branch: "main"
+
+# Analysis configuration
+period_days: 7
+stale_days: 14
+fetch_depth: 200
+top_k_files: 10
+
+# Output configuration
+cache_dir: "~/.cache/git-analyzer"
+output_file: "analysis-report.md"
+
+# OpenRouter.ai LLM configuration examples:
+
+# Option 1: Claude 3 Haiku (RECOMMENDED - Best cost/performance balance)
+llm:
+  provider: "openrouter"
+  model: "anthropic/claude-3-haiku"
+  temperature: 0.4
+  api_key: "sk-or-v1-your-api-key-here"
+  base_url: "https://openrouter.ai/api/v1"  # Auto-set for openrouter provider
+  max_tokens: 2500
+
+# Option 2: GPT-3.5 Turbo (Good balance, familiar model)
+# llm:
+#   provider: "openrouter"
+#   model: "openai/gpt-3.5-turbo"
+#   temperature: 0.3
+#   api_key: "sk-or-v1-your-api-key-here"
+#   max_tokens: 3000
+
+# Option 3: Llama 3.1 8B (Ultra budget option)
+# llm:
+#   provider: "openrouter"
+#   model: "meta-llama/llama-3.1-8b-instruct"
+#   temperature: 0.5
+#   api_key: "sk-or-v1-your-api-key-here"
+#   max_tokens: 2000
+
+# Option 4: Claude 3.5 Sonnet (Premium quality, higher cost)
+# llm:
+#   provider: "openrouter"
+#   model: "anthropic/claude-3.5-sonnet"
+#   temperature: 0.3
+#   api_key: "sk-or-v1-your-api-key-here"
+#   max_tokens: 4000
+
+# Cost-effective models ranked by value:
+# 1. anthropic/claude-3-haiku (~$0.01/analysis) - BEST VALUE ⭐
+# 2. openai/gpt-3.5-turbo (~$0.02/analysis) - Reliable choice
+# 3. meta-llama/llama-3.1-8b-instruct (~$0.002/analysis) - Ultra budget
+# 4. anthropic/claude-3.5-sonnet (~$0.15/analysis) - Premium quality
+# 5. openai/gpt-4-turbo (~$0.50/analysis) - Highest quality
+
+# Note: Replace "sk-or-v1-your-api-key-here" with your actual OpenRouter API key
+# Get your API key from: https://openrouter.ai/keys

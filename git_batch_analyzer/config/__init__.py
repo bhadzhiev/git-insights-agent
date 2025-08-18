@@ -1,0 +1,1 @@
+"""Configuration module for Git Batch Analyzer."""

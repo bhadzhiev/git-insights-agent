@@ -1,0 +1,27 @@
+# Example configuration for Git Batch Analyzer
+
+repositories:
+  - url: "https://github.com/example/repo1.git"
+    branch: "main"
+  - url: "https://github.com/example/repo2.git"
+    # branch not specified - will use remote HEAD
+  - "https://github.com/example/repo3.git"  # Simple string format
+
+# Analysis configuration
+period_days: 7
+stale_days: 14
+fetch_depth: 200
+top_k_files: 10
+
+# Output configuration
+cache_dir: "~/.cache/git-analyzer"
+output_file: "report.md"
+
+# LLM configuration (optional)
+llm:
+  provider: "openai"          # Supported: openai, anthropic, azure, openrouter
+  model: "gpt-3.5-turbo"      # Model name (provider-specific)
+  temperature: 0.7            # 0.0-2.0, lower = more focused
+  # api_key: "your-api-key-here"     # Can also be set via environment variable
+  # base_url: "https://api.openai.com/v1"  # Custom API endpoint (auto-set for known providers)
+  # max_tokens: 4000                        # Maximum response length
