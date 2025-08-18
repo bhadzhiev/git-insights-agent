@@ -662,7 +662,25 @@ def user_analysis_node(state: AnalysisState) -> Dict[str, Any]:
                     
                     # Generate code review insights for top files
                     try:
-                        code_review_response = llm_tool.generate_code_review_insights(user_stats)
+                        # Read file contents for top modified files
+                        file_contents = {}
+                        repo_path = state["cache_path"] # This is the path to the cloned repository
+                        for file_info in user_stats.get('top_files', [])[:3]:
+                            filename = file_info.get('filename')
+                            if filename:
+                                full_file_path = repo_path / filename
+                                if full_file_path.exists() and full_file_path.is_file():
+                                    try:
+                                        with open(full_file_path, 'r', encoding='utf-8') as f:
+                                            file_contents[filename] = f.read()
+                                    except Exception as file_read_e:
+                                        print(f"Error reading file {full_file_path}: {file_read_e}")
+                                        file_contents[filename] = "" # Add empty content if read fails
+                                else:
+                                    print(f"File not found or not a file: {full_file_path}")
+                                    file_contents[filename] = "" # Add empty content if file not found
+
+                        code_review_response = llm_tool.generate_code_review_insights(user_stats, file_contents)
                         if code_review_response.success:
                             user_stats['code_review_insights'] = code_review_response.data
                         else:

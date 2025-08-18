@@ -251,7 +251,11 @@ def _generate_final_report(config: AnalysisConfig, results: Dict[str, Any]) -> N
     all_reports = []
     for repo_result in results["successful_repositories"]:
         final_state = repo_result["final_state"]
-        if final_state.get("final_report"):
+        # Filter to include only repositories with actual PRs/changes in the period
+        pr_metrics = final_state.get("pr_metrics", {})
+        total_prs = pr_metrics.get("total_prs", 0)
+
+        if final_state.get("final_report") and total_prs > 0:
             all_reports.append({
                 "name": repo_result["name"],
                 "url": repo_result["url"],
@@ -259,7 +263,8 @@ def _generate_final_report(config: AnalysisConfig, results: Dict[str, Any]) -> N
             })
     
     if not all_reports:
-        logger.error("No reports were generated from successful repositories")
+        click.echo("No repositories with changes were found in the specified period - no report generated.", err=True)
+        logger.info("No repositories with changes were found in the specified period - no report generated.")
         return
     
     # Combine reports into a single document

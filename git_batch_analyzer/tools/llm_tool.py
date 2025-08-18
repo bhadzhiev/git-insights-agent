@@ -241,18 +241,18 @@ Format as a simple list of recommendations."""
         except Exception as e:
             return ToolResponse.error_response(f"Failed to generate user recommendations: {str(e)}")
     
-    def generate_code_review_insights(self, user_stats: Dict[str, Any]) -> ToolResponse:
+    def generate_code_review_insights(self, user_stats: Dict[str, Any], file_contents: Dict[str, str]) -> ToolResponse:
         """Generate senior developer code review insights for user's top modified files.
         
         Args:
             user_stats: UserStats.to_dict() format with user's coding patterns
+            file_contents: Dictionary mapping filename to its full code content.
             
         Returns:
             ToolResponse with code review insights from senior developer perspective
         """
-        # Safety check - ensure no source code is being sent
-        if not self._validate_no_source_code(user_stats):
-            return ToolResponse.error_response("Safety check failed: potential source code detected in user stats")
+        # NOTE: Safety check for source code removed as per user's explicit confirmation.
+        # This function now expects to receive and process actual source code.
         
         try:
             top_files = user_stats.get('top_files', [])[:3]  # Top 3 most modified files
@@ -266,68 +266,73 @@ Format as a simple list of recommendations."""
             for work_type in set(work_types):
                 work_type_summary[work_type] = work_types.count(work_type)
             
-            # Create file analysis summary without exposing code content
-            file_analysis = []
+            # Prepare detailed file analysis including code content
+            detailed_file_analysis = []
             for file_info in top_files:
                 filename = file_info.get('filename', 'unknown')
-                mod_count = file_info.get('modification_count', 0)
-                changes = file_info.get('total_changes', 0)
+                code_content = file_contents.get(filename, "")
                 
-                file_analysis.append({
+                # Truncate large files to avoid token limits, if necessary
+                # This is a basic truncation; more sophisticated methods might be needed for very large files.
+                if len(code_content) > 10000: # Example limit, adjust as needed
+                    code_content = code_content[:5000] + "\n... [TRUNCATED] ...\n" + code_content[-5000:]
+                
+                detailed_file_analysis.append({
                     'filename': filename,
-                    'modifications': mod_count,
-                    'total_changes': changes,
-                    'avg_changes_per_mod': round(changes / max(mod_count, 1), 1)
+                    'code_content': code_content,
+                    'modification_count': file_info.get('modification_count', 0),
+                    'total_changes': file_info.get('total_changes', 0),
                 })
             
-            prompt = f"""As a senior software developer conducting a code review, analyze the file modification patterns for developer {username} and provide structured insights using proven code review practices.
+            prompt = f"""As a senior software developer conducting a comprehensive code review, analyze the provided code files for developer {username}. Focus on the following criteria:
 
-# Developer Context
-- **Total Commits**: {total_commits}
-- **Work Distribution**: {work_type_summary}
+# Code Review Criteria:
+1.  **Naming Conventions**: Assess clarity, consistency, and adherence to established patterns (e.g., camelCase, snake_case, PascalCase for variables, functions, classes).
+2.  **Design Patterns**: Identify adherence to or deviation from common design patterns (e.g., Singleton, Factory, Observer, Strategy) where applicable. Suggest improvements if a pattern could enhance maintainability or scalability.
+3.  **Complexity Levels**: Evaluate for overly long methods/functions, deep nesting of `if`/`else` statements or loops, and overall cyclomatic complexity. Suggest refactoring for readability and testability.
+4.  **Formatting and Style**: Check for consistency with general coding style guidelines (e.g., indentation, line breaks, spacing, brace placement). Point out any deviations.
+5.  **Comments and Documentation**: Assess the presence, clarity, and quality of inline comments, function/method docstrings, and class documentation. Ensure they explain *why* code exists, not just *what* it does.
 
-# Top Modified Files Analysis
-{file_analysis}
+# Developer Context (for reference, do not directly review these metrics):
+- **Username**: {username}
+- **Top Modified Files**: {[f['filename'] for f in top_files]}
 
-Using this comprehensive code review framework, provide analysis for each of the top 3 files:
+# Files for Review:
+"""
+            
+            for file_data in detailed_file_analysis:
+                prompt += f"""
+---
+File: {file_data['filename']} ---
+```
+{file_data['code_content']}
+```
 
-## Per-File Analysis Template
+"""
+            
+            prompt += f"""
+Based on the above code and the specified criteria, provide your review. If you find problems, give concrete recommendations for improvements. If no significant issues are found, give a brief confirmation that the file is in good condition. Be concise and professional.
 
-For each file, provide:
+Provide your review in a structured format, addressing each file individually. For each file, clearly state any issues found, categorized by the criteria, and provide actionable recommendations. If a file is in good condition, state that explicitly.
 
-**Role & Purpose**: What this file likely does based on its name and modification patterns
+Example format for a file with issues:
 
-**Strengths Observed**:
-- Positive patterns from modification frequency/size
-- Architectural benefits suggested by the file's role
+### File: example.py
 
-**Potential Issues** (use severity rubric):
-- **Major**: Reliability/performance/design risks (high change frequency may indicate complexity)
-- **Minor**: Quality/maintainability opportunities  
-- **Nit**: Style/organization suggestions
+**Naming Conventions**: Issue - Variable `x` is too generic. Recommendation - Rename to `user_count` for clarity.
+**Complexity**: Issue - `process_data` method has 5 nested if statements. Recommendation - Refactor using Strategy pattern or extract helper methods.
+**Comments**: Issue - No docstring for `calculate_total`. Recommendation - Add a docstring explaining its purpose and parameters.
 
-**Recommendations**:
-- **Design & Maintainability**: Single responsibility, DRY principles, clear boundaries
-- **Performance**: If high-change file, consider hot path optimization
-- **Reliability**: Error handling patterns for frequently changed code
-- **Observability**: Logging/monitoring for critical files
-- **Tests**: Coverage needs based on change frequency
+Example format for a file in good condition:
 
-## Key Focus Areas:
-- Files with high `avg_changes_per_mod` may indicate complexity or technical debt
-- Frequently modified files (high modification count) are candidates for:
-  - Enhanced test coverage
-  - Better error handling  
-  - Performance optimization
-  - Documentation updates
-- File naming patterns suggest architectural organization
+### File: good_code.js
 
-## Severity Rubric:
-- **Major**: Design/reliability risks that affect system stability
-- **Minor**: Quality improvements that enhance maintainability  
-- **Nit**: Style/organization suggestions
+This file appears to be in good condition, adhering to all specified code review criteria.
 
-Provide actionable, specific recommendations based on file patterns. Keep total response under 400 words."""
+---
+
+Remember to be specific and actionable in your recommendations. If a file is very large and truncated, focus on the visible parts and general patterns.
+"""
 
             # Generate code review insights
             message = HumanMessage(content=prompt)
