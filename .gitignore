@@ -1,0 +1,9 @@
+config-cost-optimized.yaml
+config-openrouter.yaml
+*.local.json
+.venv/
+.pytest_cache/
+.idea/
+__pycache__/
+*.pyc
+*.log
