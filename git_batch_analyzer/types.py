@@ -162,11 +162,13 @@ class AnalysisState(TypedDict):
     config: Dict[str, Any]  # AnalysisConfig as dict
     repository_url: str
     repository_name: str
-    branch: str
+    branch: str  # Configured branch (may be ignored)
+    actual_branch: Optional[str]  # Branch actually analyzed (determined by git)
     cache_path: Path
     
     # Raw git data
     merge_commits: List[Dict[str, Any]]  # MergeCommit.to_dict() results
+    all_commits: List[Dict[str, Any]]  # All commits (not just merges) during analysis period
     branches: List[Dict[str, Any]]  # BranchInfo.to_dict() results
     diff_stats: List[Dict[str, Any]]  # DiffStats.to_dict() results
     
@@ -216,6 +218,7 @@ def create_initial_state(
         
         # Raw git data
         merge_commits=[],
+        all_commits=[],
         branches=[],
         diff_stats=[],
         

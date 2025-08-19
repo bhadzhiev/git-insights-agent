@@ -35,6 +35,7 @@ class AnalysisConfig:
     fetch_depth: int = 200
     top_k_files: int = 10
     llm: Optional[LLMConfig] = None
+    max_workers: int = 4  # Number of parallel workers for repository processing
     
     def __post_init__(self):
         """Post-initialization processing."""

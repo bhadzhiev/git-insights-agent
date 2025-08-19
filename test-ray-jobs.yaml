@@ -1,0 +1,14 @@
+# Test configuration for ray-jobs only
+repositories:
+  - url: "https://bhadzhiev@git.eu-west-1.codecatalyst.aws/v1/linkin/DATA/ray-jobs"
+
+# Analysis configuration
+period_days: 7
+stale_days: 14
+fetch_depth: 200
+top_k_files: 10
+
+# Output configuration
+cache_dir: "~/.cache/git-analyzer"
+output_file: "test-ray-jobs-analysis.md"
+max_workers: 1

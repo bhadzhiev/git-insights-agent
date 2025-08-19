@@ -18,13 +18,13 @@ def sync_node(state: AnalysisState) -> Dict[str, Any]:
     This node handles:
     - Cloning the repository if it doesn't exist
     - Fetching latest changes from remote
-    - Checking out the specified branch
+    - Determining and checking out the default branch
     
     Args:
         state: Current analysis state
         
     Returns:
-        Updated state with sync_completed status
+        Updated state with sync_completed status and actual_branch used
     """
     try:
         git_tool = GitTool(state["cache_path"])
@@ -40,13 +40,25 @@ def sync_node(state: AnalysisState) -> Dict[str, Any]:
                 state["errors"].append(f"Failed to clone repository: {clone_response.error}")
                 return {"sync_completed": False, "errors": state["errors"]}
         
-        # Fetch latest changes
-        fetch_response = git_tool.fetch(state["branch"])
+        # Fetch all branches from remote
+        fetch_response = git_tool.fetch()
         if not fetch_response.success:
             state["errors"].append(f"Failed to fetch updates: {fetch_response.error}")
             return {"sync_completed": False, "errors": state["errors"]}
         
-        return {"sync_completed": True}
+        # Use the specified branch (since we're now analyzing specific branches)
+        specified_branch = state["branch"]
+        
+        # Checkout the specified branch
+        checkout_fetch_response = git_tool.fetch(specified_branch)
+        if not checkout_fetch_response.success:
+            state["errors"].append(f"Failed to checkout branch '{specified_branch}': {checkout_fetch_response.error}")
+            return {"sync_completed": False, "errors": state["errors"]}
+        
+        return {
+            "sync_completed": True,
+            "actual_branch": specified_branch  # Track which branch was actually analyzed
+        }
         
     except Exception as e:
         state["errors"].append(f"Sync node error: {str(e)}")
@@ -76,13 +88,24 @@ def collect_node(state: AnalysisState) -> Dict[str, Any]:
         config = state["config"]
         period_days = config.get("period_days", 7)
         
+        # Use actual_branch from sync_node instead of configured branch
+        branch_to_analyze = state.get("actual_branch", state["branch"])
+        
         # Collect merge commits
-        merges_response = git_tool.log_merges(state["branch"], period_days)
+        merges_response = git_tool.log_merges(branch_to_analyze, period_days)
         if not merges_response.success:
             state["errors"].append(f"Failed to collect merge commits: {merges_response.error}")
             return {"collect_completed": False, "errors": state["errors"]}
         
         merge_commits = merges_response.data or []
+        
+        # Also collect ALL commits (not just merges) to check for direct pushes
+        all_commits_response = git_tool.log_all_commits(branch_to_analyze, period_days)
+        if not all_commits_response.success:
+            state["errors"].append(f"Failed to collect all commits: {all_commits_response.error}")
+            return {"collect_completed": False, "errors": state["errors"]}
+        
+        all_commits = all_commits_response.data or []
         
         # Collect diff statistics for each merge commit
         diff_stats = []
@@ -104,6 +127,7 @@ def collect_node(state: AnalysisState) -> Dict[str, Any]:
         
         return {
             "merge_commits": merge_commits,
+            "all_commits": all_commits,
             "diff_stats": diff_stats,
             "branches": branches,
             "collect_completed": True
@@ -282,7 +306,7 @@ def tables_node(state: AnalysisState) -> Dict[str, Any]:
         metrics_section_response = md_tool.render_section(
             f"{state['repository_name']} - PR Metrics", 
             metrics_response.data, 
-            level=3
+            level=5
         )
         if metrics_section_response.success:
             tables_sections.append(metrics_section_response.data)
@@ -295,7 +319,7 @@ def tables_node(state: AnalysisState) -> Dict[str, Any]:
                 weekly_section_response = md_tool.render_section(
                     f"{state['repository_name']} - Weekly PR Counts", 
                     weekly_response.data, 
-                    level=3
+                    level=5
                 )
                 if weekly_section_response.success:
                     tables_sections.append(weekly_section_response.data)
@@ -308,7 +332,7 @@ def tables_node(state: AnalysisState) -> Dict[str, Any]:
                 files_section_response = md_tool.render_section(
                     f"{state['repository_name']} - Top Changed Files", 
                     files_response.data, 
-                    level=3
+                    level=5
                 )
                 if files_section_response.success:
                     tables_sections.append(files_section_response.data)
@@ -320,7 +344,7 @@ def tables_node(state: AnalysisState) -> Dict[str, Any]:
                 stale_section_response = md_tool.render_section(
                     f"{state['repository_name']} - Stale Branches", 
                     stale_response.data, 
-                    level=3
+                    level=5
                 )
                 if stale_section_response.success:
                     tables_sections.append(stale_section_response.data)
@@ -333,7 +357,7 @@ def tables_node(state: AnalysisState) -> Dict[str, Any]:
                 user_overview_section_response = md_tool.render_section(
                     f"{state['repository_name']} - Developer Statistics", 
                     user_overview_response.data, 
-                    level=3
+                    level=5
                 )
                 if user_overview_section_response.success:
                     tables_sections.append(user_overview_section_response.data)
@@ -347,7 +371,7 @@ def tables_node(state: AnalysisState) -> Dict[str, Any]:
                     user_detail_section_response = md_tool.render_section(
                         f"Developer Profile: {username}", 
                         user_detail_response.data, 
-                        level=4
+                        level=6
                     )
                     if user_detail_section_response.success:
                         tables_sections.append(user_detail_section_response.data)
@@ -392,8 +416,8 @@ def exec_summary_node(state: AnalysisState) -> Dict[str, Any]:
         pr_metrics = state["pr_metrics"]
         
         # Check if LLM is enabled in config
-        llm_config = config.get("llm", {})
-        if not llm_config.get("enabled", True):
+        llm_config = config.get("llm")
+        if not llm_config or not llm_config.get("enabled", True):
             # Skip LLM generation if disabled
             return {
                 "executive_summary": None,
@@ -456,8 +480,8 @@ def org_trend_node(state: AnalysisState) -> Dict[str, Any]:
         pr_metrics = state["pr_metrics"]
         
         # Check if LLM is enabled in config
-        llm_config = config.get("llm", {})
-        if not llm_config.get("enabled", True):
+        llm_config = config.get("llm")
+        if not llm_config or not llm_config.get("enabled", True):
             # Skip LLM generation if disabled
             return {
                 "org_trends": None,
@@ -480,6 +504,14 @@ def org_trend_node(state: AnalysisState) -> Dict[str, Any]:
         
         # Prepare weekly aggregated data for organizational analysis
         weekly_data = pr_metrics.get("weekly_pr_counts", {})
+        total_prs = pr_metrics.get("total_prs", 0)
+        
+        # Skip organizational trends if no data available
+        if total_prs == 0 or not weekly_data:
+            return {
+                "org_trends": None,  # No trends section
+                "org_trend_completed": True
+            }
         
         # Create aggregated data structure for org-level analysis
         weekly_aggregated_data = []
@@ -542,7 +574,7 @@ def assembler_node(state: AnalysisState) -> Dict[str, Any]:
             exec_section_response = md_tool.render_section(
                 "Executive Summary", 
                 state["executive_summary"], 
-                level=2
+                level=4
             )
             if exec_section_response.success:
                 sections.append(exec_section_response.data)
@@ -552,7 +584,7 @@ def assembler_node(state: AnalysisState) -> Dict[str, Any]:
             tables_section_response = md_tool.render_section(
                 "Repository Metrics", 
                 state["tables_markdown"], 
-                level=2
+                level=4
             )
             if tables_section_response.success:
                 sections.append(tables_section_response.data)
@@ -562,16 +594,17 @@ def assembler_node(state: AnalysisState) -> Dict[str, Any]:
             trends_section_response = md_tool.render_section(
                 "Organizational Trends", 
                 state["org_trends"], 
-                level=2
+                level=4
             )
             if trends_section_response.success:
                 sections.append(trends_section_response.data)
         
         # 4. Add report header
-        report_title = f"# Git Analysis Report - {state['repository_name']}"
+        report_title = f"### Git Analysis Report - {state['repository_name']}"
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
-        report_header = f"{report_title}\n\nGenerated on: {timestamp}"
+        actual_branch = state.get("actual_branch", state["branch"])
+        report_header = f"{report_title}\n\n**Generated on:** {timestamp}  \n**Analyzed Branch:** {actual_branch}"
         
         # Combine all sections with header
         all_sections = [report_header] + sections
@@ -581,9 +614,37 @@ def assembler_node(state: AnalysisState) -> Dict[str, Any]:
             state["errors"].append(f"Failed to assemble final report: {final_report_response.error}")
             return {"assembler_completed": False, "errors": state["errors"]}
         
-        # Write report to configured output file
+        # Check if there are any PRs/changes in the analysis period
+        pr_metrics = state.get("pr_metrics", {})
+        total_prs = pr_metrics.get("total_prs", 0)
+        
+        # Also check for any commits (not just PRs)
+        all_commits = state.get("all_commits", [])
+        total_commits = len(all_commits)
+        
+        # Skip file generation if no changes during the period (no PRs AND no commits)
+        if total_prs == 0 and total_commits == 0:
+            return {
+                "final_report": final_report_response.data,
+                "report_filename": None,  # No file created
+                "assembler_completed": True,
+                "skipped_no_changes": True
+            }
+        
+        # Generate individual report file for this repository
         config = state["config"]
-        output_file = config.get("output_file", "report.md")
+        period_days = config.get("period_days", 7)
+        
+        # Create reports directory if it doesn't exist
+        import os
+        from pathlib import Path
+        reports_dir = Path("reports")
+        reports_dir.mkdir(exist_ok=True)
+        
+        # Generate filename using the new pattern
+        repo_name = state["repository_name"]
+        filename = md_tool.generate_report_filename(repo_name, period_days)
+        output_file = reports_dir / filename
         
         try:
             with open(output_file, "w", encoding="utf-8") as f:
@@ -594,6 +655,7 @@ def assembler_node(state: AnalysisState) -> Dict[str, Any]:
         
         return {
             "final_report": final_report_response.data,
+            "report_filename": str(output_file),
             "assembler_completed": True
         }
         
@@ -626,8 +688,11 @@ def user_analysis_node(state: AnalysisState) -> Dict[str, Any]:
         config = state["config"]
         period_days = config.get("period_days", 7)
         
+        # Use actual_branch from sync_node instead of configured branch
+        branch_to_analyze = state.get("actual_branch", state["branch"])
+        
         # Analyze all users
-        user_analysis_response = user_analysis_tool.analyze_all_users(state["branch"], period_days)
+        user_analysis_response = user_analysis_tool.analyze_all_users(branch_to_analyze, period_days)
         if not user_analysis_response.success:
             state["errors"].append(f"Failed to analyze users: {user_analysis_response.error}")
             return {"user_analysis_completed": False, "errors": state["errors"]}
@@ -635,7 +700,7 @@ def user_analysis_node(state: AnalysisState) -> Dict[str, Any]:
         user_stats_list = user_analysis_response.data or []
         
         # Generate LLM recommendations if LLM is enabled
-        llm_config = config.get("llm", {})
+        llm_config = config.get("llm")
         if llm_config and llm_config.get("enabled", True):
             try:
                 llm_tool = LLMTool(

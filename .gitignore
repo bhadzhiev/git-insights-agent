@@ -7,3 +7,6 @@ config-openrouter.yaml
 __pycache__/
 *.pyc
 *.log
+.kiro/
+.vscode/
+.qodo/

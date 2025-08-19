@@ -47,6 +47,11 @@ logger = logging.getLogger(__name__)
     help='Override analysis period in days from config'
 )
 @click.option(
+    '--max-workers',
+    type=int,
+    help='Number of parallel workers for repository processing (default: 4)'
+)
+@click.option(
     '--dry-run',
     is_flag=True,
     help='Validate configuration and show what would be processed without running analysis'
@@ -57,6 +62,7 @@ def cli(
     output: Path,
     cache_dir: Path,
     period_days: int,
+    max_workers: int,
     dry_run: bool
 ) -> None:
     """
@@ -70,6 +76,8 @@ def cli(
         
         git-batch-analyzer config.yaml --verbose --output custom-report.md
         
+        git-batch-analyzer config.yaml --max-workers 8  # Use 8 parallel workers
+        
         git-batch-analyzer config.yaml --dry-run
     """
     # Configure logging level
@@ -79,12 +87,13 @@ def cli(
         logger.debug("Verbose logging enabled")
     
     try:
+      
         # Load and validate configuration
         logger.info(f"Loading configuration from {config_file}")
         config = load_config_from_yaml(config_file)
         
         # Apply CLI overrides
-        config = _apply_cli_overrides(config, output, cache_dir, period_days)
+        config = _apply_cli_overrides(config, output, cache_dir, period_days, max_workers)
         
         # Log configuration summary
         _log_config_summary(config)
@@ -98,8 +107,8 @@ def cli(
         logger.info(f"Starting analysis of {len(config.repositories)} repositories")
         results = _process_all_repositories(config)
         
-        # Generate final report
-        _generate_final_report(config, results)
+        # Generate summary report
+        _generate_summary_report(config, results)
         
         # Log summary
         _log_final_summary(results, config.output_file)
@@ -125,7 +134,8 @@ def _apply_cli_overrides(
     config: AnalysisConfig,
     output: Path,
     cache_dir: Path,
-    period_days: int
+    period_days: int,
+    max_workers: int
 ) -> AnalysisConfig:
     """Apply CLI option overrides to configuration."""
     if output:
@@ -144,6 +154,10 @@ def _apply_cli_overrides(
             config.stale_days = period_days
         logger.debug(f"Analysis period overridden to: {config.period_days} days")
     
+    if max_workers:
+        config.max_workers = max_workers
+        logger.debug(f"Max workers overridden to: {config.max_workers}")
+    
     return config
 
 
@@ -153,6 +167,7 @@ def _log_config_summary(config: AnalysisConfig) -> None:
     logger.info(f"  - Repositories: {len(config.repositories)}")
     logger.info(f"  - Analysis period: {config.period_days} days")
     logger.info(f"  - Stale branch threshold: {config.stale_days} days")
+    logger.info(f"  - Max parallel workers: {config.max_workers}")
     logger.info(f"  - Cache directory: {config.cache_dir}")
     logger.info(f"  - Output file: {config.output_file}")
     logger.info(f"  - LLM enabled: {'Yes' if config.llm else 'No'}")
@@ -178,6 +193,7 @@ def _show_dry_run_summary(config: AnalysisConfig) -> None:
     click.echo(f"  - Stale threshold: {config.stale_days} days")
     click.echo(f"  - Fetch depth: {config.fetch_depth} commits")
     click.echo(f"  - Top files to show: {config.top_k_files}")
+    click.echo(f"  - Parallel workers: {config.max_workers}")
     
     click.echo(f"\nOutput configuration:")
     click.echo(f"  - Cache directory: {config.cache_dir}")
@@ -204,6 +220,7 @@ def _process_all_repositories(config: AnalysisConfig) -> Dict[str, Any]:
         "top_k_files": config.top_k_files,
         "cache_dir": str(config.cache_dir),
         "output_file": str(config.output_file),
+        "max_workers": config.max_workers,
         "llm": {
             "provider": config.llm.provider,
             "model": config.llm.model,
@@ -223,14 +240,20 @@ def _process_all_repositories(config: AnalysisConfig) -> Dict[str, Any]:
     # Process repositories with progress tracking
     results = process_repositories(repositories, config_dict)
     
-    # Log progress for each repository
+    # Initialize inactive_repositories list if not present
+    if "inactive_repositories" not in results:
+        results["inactive_repositories"] = []
+    
+    # Log progress for each repository-branch combination
     for repo_result in results["successful_repositories"]:
-        click.echo(f"✓ Successfully processed: {repo_result['name']}")
-        logger.info(f"✓ Successfully processed: {repo_result['name']}")
+        branch_info = f" ({repo_result.get('branch', 'unknown')})" if repo_result.get('branch') else ""
+        click.echo(f"✓ Successfully processed: {repo_result['name']}{branch_info}")
+        logger.info(f"✓ Successfully processed: {repo_result['name']}{branch_info}")
     
     for repo_result in results["failed_repositories"]:
-        click.echo(f"✗ Failed to process: {repo_result['name']}", err=True)
-        logger.warning(f"✗ Failed to process: {repo_result['name']}")
+        branch_info = f" ({repo_result.get('branch', 'unknown')})" if repo_result.get('branch') else ""
+        click.echo(f"✗ Failed to process: {repo_result['name']}{branch_info}", err=True)
+        logger.warning(f"✗ Failed to process: {repo_result['name']}{branch_info}")
         for error in repo_result["errors"]:
             click.echo(f"  - {error}", err=True)
             logger.warning(f"  - {error}")
@@ -238,102 +261,175 @@ def _process_all_repositories(config: AnalysisConfig) -> Dict[str, Any]:
     return results
 
 
-def _generate_final_report(config: AnalysisConfig, results: Dict[str, Any]) -> None:
-    """Generate the final combined report from all successful repositories."""
+def _generate_summary_report(config: AnalysisConfig, results: Dict[str, Any]) -> None:
+    """Generate and write a summary report listing all individual repository reports."""
     if not results["successful_repositories"]:
         click.echo("No repositories were successfully processed - cannot generate report", err=True)
         logger.error("No repositories were successfully processed - cannot generate report")
         return
     
-    logger.info("Generating final combined report...")
+    logger.info("Generating summary report...")
     
-    # Collect all final reports from successful repositories
-    all_reports = []
+    # Collect all repository information
+    successful_repos = []
+    inactive_repos = []
+    
     for repo_result in results["successful_repositories"]:
         final_state = repo_result["final_state"]
-        # Filter to include only repositories with actual PRs/changes in the period
+        # Check if repository has actual PRs/changes in the period
         pr_metrics = final_state.get("pr_metrics", {})
         total_prs = pr_metrics.get("total_prs", 0)
+        
+        # Also check for any commits (not just PRs)
+        all_commits = final_state.get("all_commits", [])
+        total_commits = len(all_commits)
 
-        if final_state.get("final_report") and total_prs > 0:
-            all_reports.append({
-                "name": repo_result["name"],
-                "url": repo_result["url"],
-                "report": final_state["final_report"]
-            })
+        repo_info = {
+            "name": repo_result["name"],
+            "url": repo_result["url"],
+            "branch": final_state.get("actual_branch", "unknown"),
+            "total_prs": total_prs,
+            "total_commits": total_commits
+        }
+
+        # Repository is active if it has PRs OR commits
+        if total_prs > 0 or total_commits > 0:
+            successful_repos.append(repo_info)
+        else:
+            inactive_repos.append(repo_info)
     
-    if not all_reports:
-        click.echo("No repositories with changes were found in the specified period - no report generated.", err=True)
-        logger.info("No repositories with changes were found in the specified period - no report generated.")
-        return
+    # Update results to track inactive repositories separately (for summary statistics)
+    results["inactive_repositories"] = inactive_repos
     
-    # Combine reports into a single document
-    combined_report = _combine_repository_reports(all_reports, config)
+    # Generate summary report content
+    summary_report = _create_summary_report_content(successful_repos, inactive_repos, results["failed_repositories"], config)
     
-    # Write the final report
+    # Write the summary report
     try:
         config.output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(config.output_file, 'w', encoding='utf-8') as f:
-            f.write(combined_report)
-        logger.info(f"Final report written to: {config.output_file}")
+            f.write(summary_report)
+        logger.info(f"Summary report written to: {config.output_file}")
     except Exception as e:
-        logger.error(f"Failed to write final report: {e}")
+        logger.error(f"Failed to write summary report: {e}")
         raise
 
 
-def _combine_repository_reports(
-    reports: List[Dict[str, Any]], 
+def _create_summary_report_content(
+    successful_repos: List[Dict[str, Any]], 
+    inactive_repos: List[Dict[str, Any]],
+    failed_repos: List[Dict[str, Any]],
     config: AnalysisConfig
 ) -> str:
-    """Combine individual repository reports into a single document."""
-    from datetime import datetime
+    """Create summary report content listing all individual repository reports."""
+    from datetime import datetime, timedelta
+    from git_batch_analyzer.tools.md_tool import MdTool
     
-    # Generate report header
+    # Calculate date range
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=config.period_days)
+    from_date = start_date.strftime("%Y-%m-%d")
+    to_date = end_date.strftime("%Y-%m-%d")
+    
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    header = f"""# Git Batch Analysis Report
+    total_repos = len(successful_repos) + len(inactive_repos) + len(failed_repos)
+    
+    header = f"""# Git Batch Analysis Summary Report
 
-Generated: {timestamp}
-Analysis Period: {config.period_days} days
-Repositories Analyzed: {len(reports)}
+**Generated:** {timestamp}  
+**Analysis Period:** {config.period_days} days ({from_date} to {to_date})  
+**Total Repositories:** {total_repos}  
+**Successful:** {len(successful_repos) + len(inactive_repos)}  
+**Failed:** {len(failed_repos)}
 
----
+## Individual Repository Reports
+
+All individual repository reports have been generated in the `reports/` folder with the naming pattern: `[repoName]report[fromDate]-[toDate].md`
 
 """
     
-    # Add each repository's report
-    combined_sections = [header]
+    sections = [header]
     
-    for i, repo_report in enumerate(reports, 1):
-        repo_section = f"""## Repository {i}: {repo_report['name']}
-
-**URL:** {repo_report['url']}
-
-{repo_report['report']}
-
----
-
-"""
-        combined_sections.append(repo_section)
+    # Active repositories section
+    if successful_repos:
+        md_tool = MdTool()
+        active_section = "### Active Repositories (with PRs/commits)\n\n"
+        
+        headers = ["Repository", "Report File", "PRs", "Commits", "Branch"]
+        rows = []
+        for repo in successful_repos:
+            filename = md_tool.generate_report_filename(repo["name"], config.period_days)
+            rows.append([
+                repo["name"],
+                f"`reports/{filename}`",
+                str(repo["total_prs"]),
+                str(repo["total_commits"]),
+                repo["branch"]
+            ])
+        
+        table_response = md_tool.render_table(headers, rows, alignment=["left", "left", "right", "right", "left"])
+        if table_response.success:
+            active_section += table_response.data
+        
+        sections.append(active_section)
     
-    return "\n".join(combined_sections)
+    # Inactive repositories section - show summary only, no report files
+    if inactive_repos:
+        inactive_section = "### Inactive Repositories (no PRs/commits)\n\n"
+        inactive_section += f"**{len(inactive_repos)} repositories** had no development activity during the analysis period:\n\n"
+        
+        for repo in inactive_repos:
+            inactive_section += f"- **{repo['name']}** (branch: {repo['branch']})\n"
+        
+        sections.append(inactive_section)
+    
+    # Failed repositories section
+    if failed_repos:
+        failed_section = "### Failed Repositories\n\n"
+        for repo in failed_repos:
+            failed_section += f"- **{repo['name']}**: {repo['error']}\n"
+        sections.append(failed_section)
+    
+    return "\n\n".join(sections)
 
 
 def _log_final_summary(results: Dict[str, Any], output_file: Path) -> None:
     """Log a final summary of the analysis results."""
     successful_count = len(results["successful_repositories"])
     failed_count = len(results["failed_repositories"])
+    inactive_count = len(results.get("inactive_repositories", []))
     total_count = successful_count + failed_count
+    
+    # Count branches with actual activity (for report generation)
+    active_count = successful_count - inactive_count
     
     # Echo to user
     click.echo("\n" + "="*60)
     click.echo("ANALYSIS COMPLETE")
     click.echo("="*60)
-    click.echo(f"Total repositories: {total_count}")
+    click.echo(f"Total branches analyzed: {total_count}")
     click.echo(f"Successfully processed: {successful_count}")
-    click.echo(f"Failed: {failed_count}")
+    click.echo(f"  - With activity (included in report): {active_count}")
+    click.echo(f"  - Without activity (inactive): {inactive_count}")
+    click.echo(f"Failed to process: {failed_count}")
     
-    if successful_count > 0:
-        click.echo(f"Report generated: {output_file}")
+    click.echo(f"Summary report generated: {output_file}")
+    click.echo(f"Individual reports saved in: reports/ folder")
+    
+    if active_count > 0:
+        click.echo(f"\nRepositories with activity:")
+        for repo_result in results["successful_repositories"]:
+            final_state = repo_result["final_state"]
+            pr_metrics = final_state.get("pr_metrics", {})
+            total_prs = pr_metrics.get("total_prs", 0)
+            if total_prs > 0:
+                report_filename = final_state.get("report_filename", "unknown")
+                click.echo(f"  - {repo_result['name']}: {total_prs} PRs -> {report_filename}")
+    
+    if inactive_count > 0:
+        click.echo(f"\nInactive repositories (no PRs in analysis period):")
+        for repo_result in results.get("inactive_repositories", []):
+            click.echo(f"  - {repo_result['name']}")
     
     if failed_count > 0:
         click.echo(f"\nFailed repositories:")
@@ -346,12 +442,19 @@ def _log_final_summary(results: Dict[str, Any], output_file: Path) -> None:
     logger.info("\n" + "="*60)
     logger.info("ANALYSIS COMPLETE")
     logger.info("="*60)
-    logger.info(f"Total repositories: {total_count}")
+    logger.info(f"Total branches analyzed: {total_count}")
     logger.info(f"Successfully processed: {successful_count}")
-    logger.info(f"Failed: {failed_count}")
+    logger.info(f"  - With activity (included in report): {active_count}")
+    logger.info(f"  - Without activity (inactive): {inactive_count}")
+    logger.info(f"Failed to process: {failed_count}")
     
-    if successful_count > 0:
+    if active_count > 0:
         logger.info(f"Report generated: {output_file}")
+    
+    if inactive_count > 0:
+        logger.info(f"\nInactive repositories (no PRs in analysis period):")
+        for repo_result in results.get("inactive_repositories", []):
+            logger.info(f"  - {repo_result['name']}")
     
     if failed_count > 0:
         logger.warning(f"\nFailed repositories:")

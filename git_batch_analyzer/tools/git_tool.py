@@ -54,7 +54,7 @@ class GitTool:
         
         Args:
             url: Repository URL to clone
-            depth: Fetch depth for shallow clone
+            depth: Fetch depth for shallow clone (use None for full clone)
             
         Returns:
             ToolResponse indicating success or failure
@@ -67,7 +67,11 @@ class GitTool:
             import shutil
             shutil.rmtree(self.repo_path)
         
-        args = ["clone", "--depth", str(depth), url, str(self.repo_path)]
+        # For multi-branch analysis, do a full clone to get all branches
+        if depth is None or depth <= 0:
+            args = ["clone", url, str(self.repo_path)]
+        else:
+            args = ["clone", "--depth", str(depth), url, str(self.repo_path)]
         
         try:
             result = subprocess.run(
@@ -100,8 +104,8 @@ class GitTool:
         if not self.repo_path.exists():
             return ToolResponse.error_response("Repository path does not exist")
         
-        # First fetch all branches
-        response = self._run_git_command(["fetch", "origin"])
+        # First fetch all branches (including remote branches not locally tracked)
+        response = self._run_git_command(["fetch", "--all"])
         if not response.success:
             return response
         
@@ -127,6 +131,37 @@ class GitTool:
         
         return ToolResponse.success_response({
             "message": "Successfully fetched from remote",
+            "branch": branch
+        })
+    
+    def checkout(self, branch: str) -> ToolResponse:
+        """Checkout a specific branch.
+        
+        Args:
+            branch: Branch name to checkout
+            
+        Returns:
+            ToolResponse indicating success or failure
+        """
+        if not self.repo_path.exists():
+            return ToolResponse.error_response("Repository path does not exist")
+        
+        # Check if branch exists locally
+        local_check = self._run_git_command(["rev-parse", "--verify", branch])
+        
+        if not local_check.success:
+            # Branch doesn't exist locally, create it from remote
+            create_response = self._run_git_command(["checkout", "-b", branch, f"origin/{branch}"])
+            if not create_response.success:
+                return ToolResponse.error_response(f"Failed to create branch '{branch}': {create_response.error}")
+        else:
+            # Branch exists locally, just checkout
+            checkout_response = self._run_git_command(["checkout", branch])
+            if not checkout_response.success:
+                return ToolResponse.error_response(f"Failed to checkout branch '{branch}': {checkout_response.error}")
+        
+        return ToolResponse.success_response({
+            "message": f"Successfully checked out branch '{branch}'",
             "branch": branch
         })
     
@@ -240,12 +275,41 @@ class GitTool:
         if not self.repo_path.exists():
             return ToolResponse.error_response("Repository path does not exist")
         
-        # Get remote branches with last commit info
-        # Format: hash|timestamp|branch_name
+        # Get remote URL from git config
+        remote_url_response = self._run_git_command(["config", "--get", "remote.origin.url"])
+        if not remote_url_response.success:
+            return ToolResponse.error_response("Could not get remote URL from git config")
+        
+        remote_url = remote_url_response.data
+        
+        # Use ls-remote to get all branch heads from remote
+        ls_remote_response = self._run_git_command(["ls-remote", "--heads", remote_url])
+        if not ls_remote_response.success:
+            return ToolResponse.error_response(f"Failed to list remote branches: {ls_remote_response.error}")
+        
+        # Parse ls-remote output to get branch names
+        remote_branches = []
+        for line in ls_remote_response.data.split('\n'):
+            line = line.strip()
+            if line:
+                parts = line.split('\t')
+                if len(parts) == 2 and parts[1].startswith('refs/heads/'):
+                    branch_name = parts[1].replace('refs/heads/', '')
+                    remote_branches.append(branch_name)
+        
+        # Now fetch each remote branch to make it available locally
+        for branch in remote_branches:
+            fetch_branch_response = self._run_git_command(["fetch", "origin", branch])
+            if not fetch_branch_response.success:
+                print(f"Warning: Failed to fetch branch {branch}: {fetch_branch_response.error}")
+        
+        # Get all branches (local and remote) with last commit info
+        # Format: hash|timestamp|branch_name  
         args = [
             "for-each-ref",
             "--format=%(objectname)|%(committerdate:unix)|%(refname:short)",
-            "refs/remotes/origin"
+            "refs/heads",  # Local branches
+            "refs/remotes/origin"  # Remote branches
         ]
         
         response = self._run_git_command(args)
@@ -253,6 +317,8 @@ class GitTool:
             return response
         
         branches = []
+        seen_branches = set()  # Track unique branch names
+        
         if response.data:
             for line in response.data.split('\n'):
                 line = line.strip()
@@ -261,20 +327,59 @@ class GitTool:
                     if len(parts) == 3:
                         hash_val, timestamp_str, ref_name = parts
                         
-                        # Remove 'origin/' prefix from branch name
-                        branch_name = ref_name.replace('origin/', '', 1)
+                        # Clean up branch name
+                        branch_name = ref_name
+                        if branch_name.startswith('origin/'):
+                            branch_name = branch_name.replace('origin/', '', 1)
                         
-                        # Convert timestamp
-                        timestamp = datetime.fromtimestamp(int(timestamp_str), tz=timezone.utc)
-                        
-                        branch_info = BranchInfo(
-                            name=branch_name,
-                            last_commit_hash=hash_val,
-                            last_commit_timestamp=timestamp
-                        )
-                        branches.append(branch_info.to_dict())
+                        # Skip duplicates (prefer local branch info over remote)
+                        if branch_name not in seen_branches and branch_name != 'HEAD':
+                            seen_branches.add(branch_name)
+                            
+                            # Convert timestamp
+                            timestamp = datetime.fromtimestamp(int(timestamp_str), tz=timezone.utc)
+                            
+                            branch_info = BranchInfo(
+                                name=branch_name,
+                                last_commit_hash=hash_val,
+                                last_commit_timestamp=timestamp
+                            )
+                            branches.append(branch_info.to_dict())
         
         return ToolResponse.success_response(branches)
+    
+    def get_default_branch(self) -> ToolResponse:
+        """Get the default branch of the repository.
+        
+        Returns:
+            ToolResponse with the default branch name
+        """
+        if not self.repo_path.exists():
+            return ToolResponse.error_response("Repository path does not exist")
+        
+        # Get the default branch from remote
+        response = self._run_git_command(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        if response.success and response.data:
+            # Output format: refs/remotes/origin/main
+            default_branch = response.data.split('/')[-1]
+            return ToolResponse.success_response(default_branch)
+        
+        # Fallback: try to get the current branch
+        response = self._run_git_command(["branch", "--show-current"])
+        if response.success and response.data:
+            return ToolResponse.success_response(response.data)
+        
+        # Final fallback: assume 'main' or 'master'
+        # Check which one exists
+        main_check = self._run_git_command(["rev-parse", "--verify", "origin/main"])
+        if main_check.success:
+            return ToolResponse.success_response("main")
+        
+        master_check = self._run_git_command(["rev-parse", "--verify", "origin/master"])
+        if master_check.success:
+            return ToolResponse.success_response("master")
+        
+        return ToolResponse.error_response("Could not determine default branch")
     
     def log_all_commits(self, branch: str, since_days: int) -> ToolResponse:
         """Get all commits (not just merges) from the specified branch and time period.

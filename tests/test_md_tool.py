@@ -746,3 +746,47 @@ class TestMdToolIntegration:
         # Table structure should be maintained despite varying character widths
         lines = response.data.split('\n')
         assert all(line.count('|') >= 4 for line in lines)  # At least 4 pipes per line (3 columns)
+    
+    def test_generate_report_filename(self):
+        """Test generating report filenames with proper format."""
+        repo_name = "my-awesome-repo"
+        period_days = 7
+        
+        filename = self.md_tool.generate_report_filename(repo_name, period_days)
+        
+        # Should follow pattern: [repoName]report[fromDate]-[toDate].md
+        assert filename.startswith("my-awesome-repo")
+        assert "report" in filename
+        assert filename.endswith(".md")
+        
+        # Should contain date range
+        assert "-" in filename  # Date separator
+        assert filename.count("-") >= 4  # At least YYYY-MM-DD-YYYY-MM-DD format
+    
+    def test_generate_report_filename_special_chars(self):
+        """Test generating report filenames with special characters in repo name."""
+        repo_names_and_expected = [
+            ("repo/with/slashes", "repo_with_slashes"),
+            ("repo with spaces", "repo_with_spaces"),
+            ("repo@domain.com", "repo_domain.com"),
+            ("repo:port", "repo_port"),
+            ("normal-repo", "normal-repo")
+        ]
+        
+        for repo_name, expected_clean in repo_names_and_expected:
+            filename = self.md_tool.generate_report_filename(repo_name, 7)
+            assert filename.startswith(expected_clean)
+            assert "report" in filename
+            assert filename.endswith(".md")
+    
+    def test_generate_report_filename_different_periods(self):
+        """Test generating report filenames with different time periods."""
+        repo_name = "test-repo"
+        
+        filename_7 = self.md_tool.generate_report_filename(repo_name, 7)
+        filename_30 = self.md_tool.generate_report_filename(repo_name, 30)
+        
+        # Both should be valid but different (due to different start dates)
+        assert filename_7.startswith("test-repo")
+        assert filename_30.startswith("test-repo")
+        assert filename_7 != filename_30  # Different periods should produce different filenames

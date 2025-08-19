@@ -155,8 +155,23 @@ Focus on development velocity, code review efficiency, and overall team producti
             return ToolResponse.error_response("Safety check failed: potential source code detected in aggregated data")
         
         try:
-            # Prepare the prompt with only aggregated data
-            prompt = f"""Analyze the following weekly aggregated development data across multiple repositories and provide organizational insights:
+            # Handle case when there's no weekly data (empty list)
+            if not weekly_aggregated_data:
+                prompt = """Analyze the development situation where no pull requests (PRs) were created during the analysis period.
+
+Weekly Aggregated Data: No PR activity during the analysis period
+
+Provide insights on:
+1. Development velocity trends (lack of activity)
+2. Team productivity patterns (identifying potential blockers)
+3. Code quality indicators (impact of low activity)
+4. Resource allocation observations (potential causes)
+5. Recommendations for improvement (actionable steps)
+
+Focus on organizational-level patterns and provide actionable insights for teams with low or no development activity. Keep the analysis professional and data-driven."""
+            else:
+                # Prepare the prompt with aggregated data
+                prompt = f"""Analyze the following weekly aggregated development data across multiple repositories and provide organizational insights:
 
 Weekly Aggregated Data:
 {weekly_aggregated_data}
@@ -201,7 +216,7 @@ Focus on organizational-level patterns and trends. Be specific about what the da
             for work_type in set(work_types):
                 work_type_summary[work_type] = work_types.count(work_type)
             
-            prompt = f"""Based on the following developer statistics, provide 3-5 personalized recommendations to help improve their coding practices and career development:
+            prompt = f"""Based on the following developer statistics, provide 1-3 personalized recommendations to help improve their coding practices and career development:
 
 Developer Profile:
 - Username: {user_stats.get('username', 'Unknown')}

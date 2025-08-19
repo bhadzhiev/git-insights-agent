@@ -27,6 +27,9 @@ git-batch-analyzer config.yaml --dry-run
 # Override output file
 git-batch-analyzer config.yaml --output custom-report.md
 
+# Use parallel processing with 8 workers
+git-batch-analyzer config.yaml --max-workers 8
+
 # Run directly with Python module
 python -m git_batch_analyzer config.yaml
 ```
@@ -89,11 +92,22 @@ The LangGraph workflow (`workflow/graph.py`) executes these nodes in sequence:
 
 Each node has conditional logic to handle failures gracefully - if any step fails, the workflow can terminate early rather than continuing with invalid data.
 
+### Parallel Processing
+
+The system supports parallel repository processing for improved performance:
+
+- **Repository-level parallelism**: Multiple repositories are processed concurrently using ThreadPoolExecutor
+- **Configurable workers**: Control the number of parallel workers via `max_workers` config (default: 4)
+- **CLI override**: Use `--max-workers N` to override the config setting
+- **Thread-safe**: Each repository gets its own workflow instance and cache directory
+- **Error isolation**: Failures in one repository don't affect others
+
 ### Configuration Structure
 
 Configuration uses YAML format with these main sections:
 - **repositories**: List of git repositories to analyze (URL + optional branch)
 - **analysis parameters**: `period_days`, `stale_days`, `fetch_depth`, `top_k_files`
+- **performance settings**: `max_workers` (parallel processing, default: 4)
 - **output settings**: `cache_dir`, `output_file`
 - **llm configuration**: Optional LLM integration for summaries (OpenAI, Anthropic, Azure, OpenRouter)
 

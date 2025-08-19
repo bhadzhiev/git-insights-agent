@@ -255,23 +255,27 @@ def process_repositories(
     repositories: List[Dict[str, Any]], 
     config: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Process multiple repositories using the workflow.
+    """Process multiple repositories using the workflow, analyzing all branches in each repository.
     
     This function handles:
-    - Creating workflow instances for each repository
+    - Creating workflow instances for each branch in each repository
+    - Getting all branches from each repository first
     - Running workflows with proper error handling
-    - Continuing processing even if individual repositories fail
-    - Collecting results and errors from all repositories
+    - Continuing processing even if individual repositories/branches fail
+    - Collecting results and errors from all repository branches
+    - Parallel processing for improved performance
     
     Args:
         repositories: List of repository configurations
         config: Global configuration dictionary
         
     Returns:
-        Dictionary containing results and errors from all repositories
+        Dictionary containing results and errors from all repository branches
     """
     from pathlib import Path
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from ..types import create_initial_state
+    from ..tools.git_tool import GitTool # Import GitTool here
     
     workflow = create_workflow()
     results = {
@@ -280,55 +284,201 @@ def process_repositories(
         "errors": []
     }
     
-    for repo_config in repositories:
-        try:
-            # Extract repository information
-            repository_url = repo_config["url"]
-            repository_name = repo_config.get("name") or _extract_repo_name(repository_url)
-            branch = repo_config.get("branch", "main")
-            
-            # Create cache path
-            cache_dir = Path(config.get("cache_dir", "~/.cache/git-analyzer")).expanduser()
-            cache_path = cache_dir / repository_name
-            
-            # Create initial state for this repository
-            initial_state = create_initial_state(
-                config=config,
-                repository_url=repository_url,
-                repository_name=repository_name,
-                branch=branch,
-                cache_path=cache_path
-            )
-            
-            # Run the workflow for this repository
-            final_state = workflow.invoke(initial_state)
-            
-            # Check if workflow completed successfully
-            if final_state.get("assembler_completed", False):
-                results["successful_repositories"].append({
-                    "name": repository_name,
-                    "url": repository_url,
-                    "final_state": final_state
-                })
-            else:
-                # Workflow failed but we continue with other repositories
-                repo_errors = final_state.get("errors", [])
+    # Get parallelism config - default to 4 workers
+    max_workers = config.get("max_workers", 4)
+    
+    # Process repositories in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all repository processing tasks
+        future_to_repo = {
+            executor.submit(_process_single_repository, repo_config, config, workflow): repo_config
+            for repo_config in repositories
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_repo):
+            repo_config = future_to_repo[future]
+            try:
+                repo_results = future.result()
+                # Merge results from this repository
+                results["successful_repositories"].extend(repo_results["successful_repositories"])
+                results["failed_repositories"].extend(repo_results["failed_repositories"])
+                results["errors"].extend(repo_results["errors"])
+            except Exception as e:
+                # Handle unexpected errors from the entire repository processing
+                repository_url = repo_config["url"]
+                repository_name = repo_config.get("name") or _extract_repo_name(repository_url)
+                error_msg = f"Unexpected error processing {repository_url}: {str(e)}"
                 results["failed_repositories"].append({
                     "name": repository_name,
                     "url": repository_url,
-                    "errors": repo_errors
+                    "branch": "all",
+                    "errors": [str(e)]
                 })
-                results["errors"].extend([f"{repository_name}: {error}" for error in repo_errors])
-                
-        except Exception as e:
-            # Handle unexpected errors during repository processing
-            error_msg = f"Unexpected error processing {repository_url}: {str(e)}"
+                results["errors"].append(error_msg)
+    
+    return results
+
+
+def _process_single_repository(
+    repo_config: Dict[str, Any], 
+    config: Dict[str, Any], 
+    workflow
+) -> Dict[str, Any]:
+    """Process a single repository and all its branches.
+    
+    Args:
+        repo_config: Repository configuration
+        config: Global configuration dictionary
+        workflow: Compiled LangGraph workflow
+        
+    Returns:
+        Dictionary containing results and errors from this repository's branches
+    """
+    from pathlib import Path
+    from ..types import create_initial_state
+    from ..tools.git_tool import GitTool
+    
+    results = {
+        "successful_repositories": [],
+        "failed_repositories": [],
+        "errors": []
+    }
+    
+    try:
+        # Extract repository information
+        repository_url = repo_config["url"]
+        repository_name = repo_config.get("name") or _extract_repo_name(repository_url)
+        
+        # Create cache path
+        cache_dir = Path(config.get("cache_dir", "~/.cache/git-analyzer")).expanduser()
+        cache_path = cache_dir / repository_name
+        
+        # First, clone and get all branches from the repository
+        git_tool = GitTool(cache_path)
+        
+        # Get all remote branches directly using ls-remote (more efficient)
+        ls_remote_response = git_tool._run_git_command(["ls-remote", "--heads", repository_url], cwd=Path.cwd())
+        if not ls_remote_response.success:
             results["failed_repositories"].append({
-                "name": repository_name if 'repository_name' in locals() else "unknown",
+                "name": repository_name,
                 "url": repository_url,
-                "errors": [str(e)]
+                "branch": "all",
+                "errors": [f"Failed to list remote branches: {ls_remote_response.error}"]
             })
-            results["errors"].append(error_msg)
+            return results
+        
+        # Parse ls-remote output to get branch names
+        remote_branches = []
+        for line in ls_remote_response.data.split('\n'):
+            line = line.strip()
+            if line:
+                parts = line.split('\t')
+                if len(parts) == 2 and parts[1].startswith('refs/heads/'):
+                    branch_name = parts[1].replace('refs/heads/', '')
+                    remote_branches.append(branch_name)
+        
+        # Remove duplicates and sort
+        real_branches = sorted(list(set(remote_branches)))
+        
+        # If no branches found, try default branches
+        if not real_branches:
+            real_branches = ["main", "master", "develop"]
+        
+        # Clone repository if it doesn't exist
+        if not cache_path.exists():
+            # If we have multiple branches to analyze, do a full clone
+            # Otherwise, use shallow clone for efficiency
+            clone_depth = 0 if len(real_branches) > 1 else 1
+            
+            clone_response = git_tool.clone(repository_url, depth=clone_depth)
+            if not clone_response.success:
+                results["failed_repositories"].append({
+                    "name": repository_name,
+                    "url": repository_url,
+                    "branch": "all",
+                    "errors": [f"Failed to clone repository: {clone_response.error}"]
+                })
+                return results
+        
+        # First, fetch all remote branches to make them available locally
+        fetch_all_response = git_tool._run_git_command(["fetch", "origin", "--prune"])
+        if not fetch_all_response.success:
+            # Try fetching each branch individually as fallback
+            for branch in real_branches:
+                fetch_response = git_tool._run_git_command(["fetch", "origin", branch])
+                if not fetch_response.success:
+                    pass  # Silently continue, checkout will handle missing branches
+        
+        # Analyze each branch separately
+        for branch in real_branches:
+            try:
+                # Create unique name for this branch analysis
+                branch_analysis_name = f"{repository_name}-{branch}"
+                
+                # Checkout the specific branch for analysis
+                checkout_response = git_tool.checkout(branch)
+                if not checkout_response.success:
+                    results["failed_repositories"].append({
+                        "name": branch_analysis_name,
+                        "url": repository_url,
+                        "branch": branch,
+                        "errors": [f"Failed to checkout branch '{branch}': {checkout_response.error}"]
+                    })
+                    continue
+                
+                # Create initial state for this repository-branch combination
+                initial_state = create_initial_state(
+                    config=config,
+                    repository_url=repository_url,
+                    repository_name=branch_analysis_name,  # Include branch in name
+                    branch=branch,
+                    cache_path=cache_path
+                )
+                
+                # Run the workflow for this repository-branch combination
+                final_state = workflow.invoke(initial_state)
+                
+                # Check if workflow completed successfully
+                if final_state.get("assembler_completed", False):
+                    results["successful_repositories"].append({
+                        "name": branch_analysis_name,
+                        "url": repository_url,
+                        "branch": branch,
+                        "final_state": final_state
+                    })
+                else:
+                    # Workflow failed but we continue with other branches
+                    repo_errors = final_state.get("errors", [])
+                    results["failed_repositories"].append({
+                        "name": branch_analysis_name,
+                        "url": repository_url,
+                        "branch": branch,
+                        "errors": repo_errors
+                    })
+                    results["errors"].extend([f"{branch_analysis_name}: {error}" for error in repo_errors])
+                    
+            except Exception as e:
+                # Handle unexpected errors during branch processing
+                error_msg = f"Unexpected error processing {repository_name}-{branch}: {str(e)}"
+                results["failed_repositories"].append({
+                    "name": f"{repository_name}-{branch}",
+                    "url": repository_url,
+                    "branch": branch,
+                    "errors": [str(e)]
+                })
+                results["errors"].append(error_msg)
+                
+    except Exception as e:
+        # Handle unexpected errors during repository processing
+        error_msg = f"Unexpected error processing {repository_url}: {str(e)}"
+        results["failed_repositories"].append({
+            "name": repository_name if 'repository_name' in locals() else "unknown",
+            "url": repository_url,
+            "branch": "all",
+            "errors": [str(e)]
+        })
+        results["errors"].append(error_msg)
     
     return results
 

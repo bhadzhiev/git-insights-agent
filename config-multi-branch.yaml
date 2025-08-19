@@ -1,0 +1,29 @@
+# Git Batch Analyzer Configuration - Multi-Branch Analysis
+# This configuration analyzes ALL branches in multiple SAP repositories
+
+repositories:
+  - url: "https://bhadzhiev@git.eu-west-1.codecatalyst.aws/v1/linkin/SAP/sap-integrations"
+  - url: "https://bhadzhiev@git.eu-west-1.codecatalyst.aws/v1/linkin/SAP/sap-cdk"
+  - url: "https://bhadzhiev@git.eu-west-1.codecatalyst.aws/v1/linkin/SAP/sap-admin"
+  - url: "https://bhadzhiev@git.eu-west-1.codecatalyst.aws/v1/linkin/DATA/sap-odata-collector"
+  - url: "https://bhadzhiev@git.eu-west-1.codecatalyst.aws/v1/linkin/DATA/airflow-dags"
+  - url: "https://bhadzhiev@git.eu-west-1.codecatalyst.aws/v1/linkin/DATA/ray-jobs"
+
+# Analysis configuration
+period_days: 7           # Analyze last 7 days of commits
+stale_days: 14           # Consider branches stale after 14 days
+fetch_depth: 200         # Fetch up to 200 commits for analysis
+top_k_files: 10          # Show top 10 files with most changes
+
+# Output configuration
+cache_dir: "~/.cache/git-analyzer"
+output_file: "multi-branch-analysis.md"
+
+# LLM configuration (optional - disable for faster processing)
+# llm:
+#   provider: "openrouter"
+#   model: "anthropic/claude-3-haiku"
+#   temperature: 0.3
+#   api_key: "your-api-key-here"
+#   base_url: "https://openrouter.ai/api/v1"
+#   max_tokens: 2000

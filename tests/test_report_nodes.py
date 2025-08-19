@@ -40,6 +40,7 @@ def sample_state():
     state["collect_completed"] = True
     state["metrics_completed"] = True
     state["stale_completed"] = True
+    state["user_analysis_completed"] = True
     
     # Add sample PR metrics
     state["pr_metrics"] = {
@@ -303,6 +304,7 @@ class TestAssemblerNode:
         sample_state["tables_completed"] = True
         sample_state["exec_summary_completed"] = True
         sample_state["org_trend_completed"] = True
+        sample_state["user_analysis_completed"] = True
         sample_state["executive_summary"] = "Test executive summary."
         sample_state["tables_markdown"] = "Test tables content."
         sample_state["org_trends"] = "Test organizational trends."
@@ -310,41 +312,57 @@ class TestAssemblerNode:
         # Mock MdTool responses
         mock_instance = Mock()
         
+        # Mock generate_report_filename
+        mock_instance.generate_report_filename.return_value = "test-repo_report2024-08-11-2024-08-18.md"
+        
         # Mock render_section calls
         mock_instance.render_section.side_effect = [
-            Mock(success=True, data="## Executive Summary\n\nTest executive summary."),
-            Mock(success=True, data="## Repository Metrics\n\nTest tables content."),
-            Mock(success=True, data="## Organizational Trends\n\nTest organizational trends.")
+            Mock(success=True, data="#### Executive Summary\n\nTest executive summary."),
+            Mock(success=True, data="#### Repository Metrics\n\nTest tables content."),
+            Mock(success=True, data="#### Organizational Trends\n\nTest organizational trends.")
         ]
         
         # Mock combine_sections call
         mock_instance.combine_sections.return_value = Mock(
             success=True, 
-            data="# Git Analysis Report - test-repo\n\nGenerated on: 2024-01-01 12:00:00 UTC\n\n## Executive Summary\n\nTest executive summary.\n\n## Repository Metrics\n\nTest tables content.\n\n## Organizational Trends\n\nTest organizational trends."
+            data="### Git Analysis Report - test-repo\n\n**Generated on:** 2024-01-01 12:00:00 UTC\n**Analyzed Branch:** main\n\n#### Executive Summary\n\nTest executive summary.\n\n#### Repository Metrics\n\nTest tables content.\n\n#### Organizational Trends\n\nTest organizational trends."
         )
         
         mock_md_tool.return_value = mock_instance
         
-        result = assembler_node(sample_state)
-        
-        assert result["assembler_completed"] is True
-        assert "final_report" in result
-        
-        # Verify file was written
-        mock_file.assert_called_once_with("test_report.md", "w", encoding="utf-8")
-        mock_file().write.assert_called_once()
-        
-        # Verify report structure
-        final_report = result["final_report"]
-        assert "# Git Analysis Report - test-repo" in final_report
-        assert "Generated on:" in final_report
-        assert "## Executive Summary" in final_report
-        assert "## Repository Metrics" in final_report
-        assert "## Organizational Trends" in final_report
+        # Mock Path and file operations
+        with patch('pathlib.Path') as mock_path_class:
+            mock_reports_dir = Mock()
+            mock_output_file = Mock()
+            mock_reports_dir.__truediv__ = Mock(return_value=mock_output_file)
+            mock_path_class.return_value = mock_reports_dir
+            
+            result = assembler_node(sample_state)
+            
+            assert result["assembler_completed"] is True
+            assert "final_report" in result
+            assert "report_filename" in result
+            
+            # Verify reports directory was created
+            mock_path_class.assert_called_with("reports")
+            mock_reports_dir.mkdir.assert_called_once_with(exist_ok=True)
+            
+            # Verify file was written with correct path
+            mock_file.assert_called_once_with(mock_output_file, "w", encoding="utf-8")
+            mock_file().write.assert_called_once()
+            
+            # Verify report structure uses new heading hierarchy
+            final_report = result["final_report"]
+            assert "### Git Analysis Report - test-repo" in final_report
+            assert "**Generated on:**" in final_report
+            assert "#### Executive Summary" in final_report
+            assert "#### Repository Metrics" in final_report
+            assert "#### Organizational Trends" in final_report
     
     def test_assembler_node_missing_prerequisites(self, sample_state):
         """Test assembler_node with missing prerequisites."""
         sample_state["tables_completed"] = False
+        sample_state["user_analysis_completed"] = True  # Add missing prerequisite
         
         result = assembler_node(sample_state)
         
@@ -360,31 +378,41 @@ class TestAssemblerNode:
         sample_state["tables_completed"] = True
         sample_state["exec_summary_completed"] = True  # Completed but no content
         sample_state["org_trend_completed"] = True     # Completed but no content
+        sample_state["user_analysis_completed"] = True
         sample_state["executive_summary"] = None       # LLM disabled
         sample_state["tables_markdown"] = "Test tables content."
         sample_state["org_trends"] = None             # LLM disabled
         
         # Mock MdTool responses
         mock_instance = Mock()
+        mock_instance.generate_report_filename.return_value = "test-repo_report2024-08-11-2024-08-18.md"
         mock_instance.render_section.return_value = Mock(
             success=True, 
-            data="## Repository Metrics\n\nTest tables content."
+            data="#### Repository Metrics\n\nTest tables content."
         )
         mock_instance.combine_sections.return_value = Mock(
             success=True, 
-            data="# Git Analysis Report - test-repo\n\nGenerated on: 2024-01-01 12:00:00 UTC\n\n## Repository Metrics\n\nTest tables content."
+            data="### Git Analysis Report - test-repo\n\n**Generated on:** 2024-01-01 12:00:00 UTC\n**Analyzed Branch:** main\n\n#### Repository Metrics\n\nTest tables content."
         )
         mock_md_tool.return_value = mock_instance
         
-        result = assembler_node(sample_state)
-        
-        assert result["assembler_completed"] is True
-        assert "final_report" in result
-        
-        # Should only include available sections
-        final_report = result["final_report"]
-        assert "# Git Analysis Report - test-repo" in final_report
-        assert "## Repository Metrics" in final_report
+        # Mock Path and file operations
+        with patch('pathlib.Path') as mock_path_class:
+            mock_reports_dir = Mock()
+            mock_output_file = Mock()
+            mock_reports_dir.__truediv__ = Mock(return_value=mock_output_file)
+            mock_path_class.return_value = mock_reports_dir
+            
+            result = assembler_node(sample_state)
+            
+            assert result["assembler_completed"] is True
+            assert "final_report" in result
+            assert "report_filename" in result
+            
+            # Should only include available sections
+            final_report = result["final_report"]
+            assert "### Git Analysis Report - test-repo" in final_report
+            assert "#### Repository Metrics" in final_report
     
     @patch('git_batch_analyzer.workflow.nodes.MdTool')
     @patch("builtins.open", side_effect=IOError("Permission denied"))
@@ -394,19 +422,28 @@ class TestAssemblerNode:
         sample_state["tables_completed"] = True
         sample_state["exec_summary_completed"] = True
         sample_state["org_trend_completed"] = True
+        sample_state["user_analysis_completed"] = True
         sample_state["tables_markdown"] = "Test content."
         
         # Mock MdTool
         mock_instance = Mock()
+        mock_instance.generate_report_filename.return_value = "test-repo_report2024-08-11-2024-08-18.md"
         mock_instance.render_section.return_value = Mock(success=True, data="Test section")
         mock_instance.combine_sections.return_value = Mock(success=True, data="Test report")
         mock_md_tool.return_value = mock_instance
         
-        result = assembler_node(sample_state)
-        
-        assert result["assembler_completed"] is False
-        assert "errors" in result
-        assert any("Permission denied" in error for error in result["errors"])
+        # Mock Path and file operations
+        with patch('pathlib.Path') as mock_path_class:
+            mock_reports_dir = Mock()
+            mock_output_file = Mock()
+            mock_reports_dir.__truediv__ = Mock(return_value=mock_output_file)
+            mock_path_class.return_value = mock_reports_dir
+            
+            result = assembler_node(sample_state)
+            
+            assert result["assembler_completed"] is False
+            assert "errors" in result
+            assert any("Permission denied" in error for error in result["errors"])
     
     @patch('git_batch_analyzer.workflow.nodes.MdTool')
     def test_assembler_node_md_tool_error(self, mock_md_tool, sample_state):
@@ -415,10 +452,12 @@ class TestAssemblerNode:
         sample_state["tables_completed"] = True
         sample_state["exec_summary_completed"] = True
         sample_state["org_trend_completed"] = True
+        sample_state["user_analysis_completed"] = True
         sample_state["tables_markdown"] = "Test content."
         
         # Mock MdTool error
         mock_instance = Mock()
+        mock_instance.generate_report_filename.return_value = "test-repo_report2024-08-11-2024-08-18.md"
         mock_instance.render_section.return_value = Mock(success=True, data="Test section")
         mock_instance.combine_sections.return_value = Mock(success=False, error="Combine error")
         mock_md_tool.return_value = mock_instance
@@ -447,6 +486,9 @@ class TestReportNodesIntegration:
         )
         mock_llm_tool.return_value = mock_llm_instance
         
+        # Add user_analysis_completed to prerequisites
+        sample_state["user_analysis_completed"] = True
+        
         # Run through all nodes in sequence
         result1 = tables_node(sample_state)
         assert result1["tables_completed"] is True
@@ -460,23 +502,32 @@ class TestReportNodesIntegration:
         assert result3["org_trend_completed"] is True
         sample_state.update(result3)
         
-        result4 = assembler_node(sample_state)
-        assert result4["assembler_completed"] is True
-        
-        # Verify final report was written
-        mock_file.assert_called_once_with("test_report.md", "w", encoding="utf-8")
-        
-        # Verify all sections are present in final report
-        final_report = result4["final_report"]
-        assert "# Git Analysis Report - test-repo" in final_report
-        assert "Executive Summary" in final_report
-        assert "Repository Metrics" in final_report
-        assert "Organizational Trends" in final_report
+        # Mock Path and file operations for assembler_node
+        with patch('pathlib.Path') as mock_path_class:
+            mock_reports_dir = Mock()
+            mock_output_file = Mock()
+            mock_reports_dir.__truediv__ = Mock(return_value=mock_output_file)
+            mock_path_class.return_value = mock_reports_dir
+            
+            result4 = assembler_node(sample_state)
+            assert result4["assembler_completed"] is True
+            
+            # Verify final report was written to reports directory
+            mock_path_class.assert_called_with("reports")
+            mock_reports_dir.mkdir.assert_called_once_with(exist_ok=True)
+            
+            # Verify all sections are present in final report
+            final_report = result4["final_report"]
+            assert "### Git Analysis Report - test-repo" in final_report
+            assert "Executive Summary" in final_report
+            assert "Repository Metrics" in final_report
+            assert "Organizational Trends" in final_report
     
     @patch("builtins.open", new_callable=mock_open)
     def test_report_generation_with_llm_disabled(self, mock_file, sample_state):
         """Test report generation with LLM disabled."""
         sample_state["config"]["llm"]["enabled"] = False
+        sample_state["user_analysis_completed"] = True  # Add prerequisite
         
         # Run through all nodes
         result1 = tables_node(sample_state)
@@ -488,22 +539,29 @@ class TestReportNodesIntegration:
         result3 = org_trend_node(sample_state)
         sample_state.update(result3)
         
-        result4 = assembler_node(sample_state)
-        
-        # All should complete successfully
-        assert result1["tables_completed"] is True
-        assert result2["exec_summary_completed"] is True
-        assert result3["org_trend_completed"] is True
-        assert result4["assembler_completed"] is True
-        
-        # Executive summary and org trends should be None
-        assert sample_state["executive_summary"] is None
-        assert sample_state["org_trends"] is None
-        
-        # But tables should be present
-        assert sample_state["tables_markdown"] is not None
-        
-        # Final report should still be generated
-        final_report = result4["final_report"]
-        assert "# Git Analysis Report - test-repo" in final_report
-        assert "Repository Metrics" in final_report
+        # Mock Path and file operations for assembler_node
+        with patch('pathlib.Path') as mock_path_class:
+            mock_reports_dir = Mock()
+            mock_output_file = Mock()
+            mock_reports_dir.__truediv__ = Mock(return_value=mock_output_file)
+            mock_path_class.return_value = mock_reports_dir
+            
+            result4 = assembler_node(sample_state)
+            
+            # All should complete successfully
+            assert result1["tables_completed"] is True
+            assert result2["exec_summary_completed"] is True
+            assert result3["org_trend_completed"] is True
+            assert result4["assembler_completed"] is True
+            
+            # Executive summary and org trends should be None
+            assert sample_state["executive_summary"] is None
+            assert sample_state["org_trends"] is None
+            
+            # But tables should be present
+            assert sample_state["tables_markdown"] is not None
+            
+            # Final report should still be generated
+            final_report = result4["final_report"]
+            assert "### Git Analysis Report - test-repo" in final_report
+            assert "Repository Metrics" in final_report

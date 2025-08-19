@@ -215,12 +215,13 @@ class TestCLIProcessing:
             assert "ANALYSIS COMPLETE" in result.output
             assert "Successfully processed: 2" in result.output
             
-            # Verify report was written
+            # Verify summary report was written
             assert output_file.exists()
             report_content = output_file.read_text()
-            assert "Git Batch Analysis Report" in report_content
-            assert "Repository 1: repo1" in report_content
-            assert "Repository 2: repo2" in report_content
+            assert "Git Batch Analysis Summary Report" in report_content
+            assert "repo1" in report_content
+            assert "repo2" in report_content
+            assert "Active Repositories (with PRs/commits)" in report_content
     
     @patch('git_batch_analyzer.main.process_repositories')
     def test_mixed_processing_results(self, mock_process, sample_config_yaml, mock_mixed_results):
@@ -249,10 +250,11 @@ class TestCLIProcessing:
             assert "Successfully processed: 1" in result.output
             assert "Failed: 1" in result.output
             
-            # Verify report was still written for successful repository
+            # Verify summary report was still written for successful repository
             assert output_file.exists()
             report_content = output_file.read_text()
-            assert "Repository 1: repo1" in report_content
+            assert "repo1" in report_content
+            assert "Git Batch Analysis Summary Report" in report_content
     
     @patch('git_batch_analyzer.main.process_repositories')
     def test_all_repositories_failed(self, mock_process, sample_config_yaml):
@@ -417,45 +419,72 @@ class TestCLIErrorHandling:
 class TestReportGeneration:
     """Test report generation functionality."""
     
-    def test_combine_repository_reports(self):
-        """Test combining multiple repository reports."""
-        from git_batch_analyzer.main import _combine_repository_reports
+    def test_create_summary_report_content(self):
+        """Test creating summary report content."""
+        from git_batch_analyzer.main import _create_summary_report_content
         from git_batch_analyzer.config.models import AnalysisConfig, RepositoryConfig
         
-        reports = [
+        successful_repos = [
             {
                 "name": "repo1",
                 "url": "https://github.com/example/repo1.git",
-                "report": "Report content for repo1"
+                "branch": "main",
+                "total_prs": 5
             },
             {
                 "name": "repo2", 
                 "url": "https://github.com/example/repo2.git",
-                "report": "Report content for repo2"
+                "branch": "develop",
+                "total_prs": 3
+            }
+        ]
+        
+        inactive_repos = [
+            {
+                "name": "repo3",
+                "url": "https://github.com/example/repo3.git",
+                "branch": "main",
+                "total_prs": 0
+            }
+        ]
+        
+        failed_repos = [
+            {
+                "name": "repo4",
+                "url": "https://github.com/example/repo4.git",
+                "error": "Repository not found"
             }
         ]
         
         config = AnalysisConfig(
             repositories=[
                 RepositoryConfig(url="https://github.com/example/repo1.git"),
-                RepositoryConfig(url="https://github.com/example/repo2.git")
+                RepositoryConfig(url="https://github.com/example/repo2.git"),
+                RepositoryConfig(url="https://github.com/example/repo3.git"),
+                RepositoryConfig(url="https://github.com/example/repo4.git")
             ],
             period_days=7
         )
         
-        combined = _combine_repository_reports(reports, config)
+        summary = _create_summary_report_content(successful_repos, inactive_repos, failed_repos, config)
         
-        assert "Git Batch Analysis Report" in combined
-        assert "Analysis Period: 7 days" in combined
-        assert "Repositories Analyzed: 2" in combined
-        assert "Repository 1: repo1" in combined
-        assert "Repository 2: repo2" in combined
-        assert "Report content for repo1" in combined
-        assert "Report content for repo2" in combined
+        assert "Git Batch Analysis Summary Report" in summary
+        assert "Analysis Period:** 7 days" in summary
+        assert "Total Repositories:** 4" in summary
+        assert "Successful:** 3" in summary
+        assert "Failed:** 1" in summary
+        assert "Active Repositories (with PRs/commits)" in summary
+        assert "Inactive Repositories (no PRs/commits)" in summary
+        assert "Failed Repositories" in summary
+        assert "repo1" in summary
+        assert "repo2" in summary
+        assert "repo3" in summary
+        assert "repo4" in summary
+        assert "Repository not found" in summary
     
-    def test_empty_reports_handling(self):
-        """Test handling of empty reports list."""
-        from git_batch_analyzer.main import _combine_repository_reports
+    def test_empty_repositories_handling(self):
+        """Test handling of empty repositories lists."""
+        from git_batch_analyzer.main import _create_summary_report_content
         from git_batch_analyzer.config.models import AnalysisConfig, RepositoryConfig
         
         config = AnalysisConfig(
@@ -463,7 +492,9 @@ class TestReportGeneration:
             period_days=7
         )
         
-        combined = _combine_repository_reports([], config)
+        summary = _create_summary_report_content([], [], [], config)
         
-        assert "Git Batch Analysis Report" in combined
-        assert "Repositories Analyzed: 0" in combined
+        assert "Git Batch Analysis Summary Report" in summary
+        assert "Total Repositories:** 0" in summary
+        assert "Successful:** 0" in summary
+        assert "Failed:** 0" in summary

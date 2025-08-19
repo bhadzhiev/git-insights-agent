@@ -411,3 +411,40 @@ class MdTool:
             
         except Exception as e:
             return ToolResponse.error_response(f"Error rendering user detail section: {str(e)}")
+    
+    def generate_report_filename(self, repo_name: str, period_days: int) -> str:
+        """Generate a filename for the repository report.
+        
+        Args:
+            repo_name: Repository name (format: "repo-branch" or just "repo")
+            period_days: Analysis period in days
+            
+        Returns:
+            Formatted filename: repo(branch)dateFrom-dateTo.md
+        """
+        from datetime import datetime, timedelta
+        import re
+        
+        # Calculate date range
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=period_days)
+        
+        # Format dates as YYYYMMDD
+        from_date = start_date.strftime("%Y%m%d")
+        to_date = end_date.strftime("%Y%m%d")
+        
+        # Parse repo_name to extract repo and branch
+        # Expected format: "repo-name-branch" or just "repo-name"
+        if '-' in repo_name:
+            # Split on last dash to separate repo from branch
+            parts = repo_name.rsplit('-', 1)
+            if len(parts) == 2:
+                repo_part, branch_part = parts
+                # Clean parts for filename (remove invalid characters)
+                clean_repo = re.sub(r'[^\w\-_.]', '_', repo_part)
+                clean_branch = re.sub(r'[^\w\-_.]', '_', branch_part)
+                return f"{clean_repo}({clean_branch}){from_date}-{to_date}.md"
+        
+        # If no branch detected, use whole name as repo
+        clean_repo_name = re.sub(r'[^\w\-_.]', '_', repo_name)
+        return f"{clean_repo_name}{from_date}-{to_date}.md"

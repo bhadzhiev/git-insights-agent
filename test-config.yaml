@@ -1,0 +1,23 @@
+# Test configuration for single repository multi-branch analysis
+
+repositories:
+  - url: "https://bhadzhiev@git.eu-west-1.codecatalyst.aws/v1/linkin/SAP/sap-integrations"
+
+# Analysis configuration
+period_days: 7           # Analyze last 7 days of commits
+stale_days: 14           # Consider branches stale after 14 days
+fetch_depth: 200         # Fetch up to 200 commits for analysis
+top_k_files: 10          # Show top 10 files with most changes
+
+# Output configuration
+cache_dir: "~/.cache/git-analyzer"
+output_file: "test-multi-branch.md"
+
+# LLM configuration (optional - disable for faster processing)
+# llm:
+#   provider: "openrouter"
+#   model: "anthropic/claude-3-haiku"
+#   temperature: 0.3
+#   api_key: "your-api-key-here"
+#   base_url: "https://openrouter.ai/api/v1"
+#   max_tokens: 2000
