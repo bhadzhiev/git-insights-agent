@@ -10,6 +10,7 @@ from .nodes import (
     metrics_node,
     stale_node,
     user_analysis_node,
+    commit_quality_node,
     tables_node,
     exec_summary_node,
     org_trend_node,
@@ -26,10 +27,11 @@ def create_workflow():
     3. metrics_node: Calculate PR metrics and aggregations
     4. stale_node: Identify stale branches
     5. user_analysis_node: Analyze user commit patterns and generate recommendations
-    6. tables_node: Generate markdown tables including user statistics
-    7. exec_summary_node: Generate LLM executive summary (if enabled)
-    8. org_trend_node: Generate LLM organizational trends (if enabled)
-    9. assembler_node: Combine all sections into final report
+    6. commit_quality_node: Analyze commit message quality vs actual changes
+    7. tables_node: Generate markdown tables including user statistics
+    8. exec_summary_node: Generate LLM executive summary (if enabled)
+    9. org_trend_node: Generate LLM organizational trends (if enabled)
+    10. assembler_node: Combine all sections into final report
     
     Returns:
         Compiled LangGraph workflow ready for execution
@@ -43,6 +45,7 @@ def create_workflow():
     workflow.add_node("metrics", metrics_node)
     workflow.add_node("stale", stale_node)
     workflow.add_node("user_analysis", user_analysis_node)
+    workflow.add_node("commit_quality", commit_quality_node)
     workflow.add_node("tables", tables_node)
     workflow.add_node("exec_summary", exec_summary_node)
     workflow.add_node("org_trend", org_trend_node)
@@ -91,6 +94,15 @@ def create_workflow():
     workflow.add_conditional_edges(
         "user_analysis",
         _should_continue_after_user_analysis,
+        {
+            "continue": "commit_quality",
+            "end": END
+        }
+    )
+    
+    workflow.add_conditional_edges(
+        "commit_quality",
+        _should_continue_after_commit_quality,
         {
             "continue": "tables",
             "end": END
@@ -231,6 +243,21 @@ def _should_continue_after_user_analysis(state: AnalysisState) -> str:
         "continue" if user analysis was successful, "end" if it failed
     """
     if state.get("user_analysis_completed", False):
+        return "continue"
+    else:
+        return "end"
+
+
+def _should_continue_after_commit_quality(state: AnalysisState) -> str:
+    """Determine if workflow should continue after commit_quality node.
+    
+    Args:
+        state: Current analysis state
+        
+    Returns:
+        "continue" if commit quality analysis was successful, "end" if it failed
+    """
+    if state.get("commit_quality_completed", False):
         return "continue"
     else:
         return "end"

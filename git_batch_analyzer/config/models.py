@@ -25,6 +25,23 @@ class LLMConfig:
 
 
 @dataclass
+class EmailConfig:
+    """Configuration for sending email notifications."""
+    sender_email: str
+    sender_name: str = "Git Batch Analyzer"
+    provider: str = "smtp"  # 'smtp' or 'mailjet'
+    
+    # Common fields
+    api_key: Optional[str] = None  # Mailjet API key or SMTP username
+    api_secret: Optional[str] = None  # Mailjet API secret or SMTP password
+    
+    # SMTP-specific fields
+    smtp_server: Optional[str] = None  # e.g., smtp.gmail.com
+    smtp_port: int = 587
+    smtp_password: Optional[str] = None  # Alias for api_secret for clarity
+
+
+@dataclass
 class AnalysisConfig:
     """Main configuration for the Git Batch Analyzer."""
     repositories: List[RepositoryConfig]
@@ -35,6 +52,7 @@ class AnalysisConfig:
     fetch_depth: int = 200
     top_k_files: int = 10
     llm: Optional[LLMConfig] = None
+    email: Optional[EmailConfig] = None
     max_workers: int = 4  # Number of parallel workers for repository processing
     
     def __post_init__(self):

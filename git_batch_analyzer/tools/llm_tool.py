@@ -227,13 +227,14 @@ Developer Profile:
 - Top Files: {[f['filename'] for f in user_stats.get('top_files', [])][:3]}
 - Message Patterns: {user_stats.get('commit_message_patterns', [])}
 
-Provide specific, actionable recommendations tailored to this developer's patterns. Each recommendation should be:
-- Maximum 50 words
-- Focused on improvement or recognition of good practices
-- Based on the actual data patterns shown
-- Professional and constructive
+Requirements:
+- Provide ONLY the recommendations, no introductory text
+- Each recommendation should be maximum 50 words
+- Focus on improvement or recognition of good practices
+- Base recommendations on the actual data patterns shown
+- Be professional and constructive
 
-Format as a simple list of recommendations."""
+Format as a simple list of recommendations, one per line, without numbers or bullets."""
 
             # Generate recommendations
             message = HumanMessage(content=prompt)
@@ -243,12 +244,27 @@ Format as a simple list of recommendations."""
             
             # Parse recommendations into list (split by newlines and clean up)
             recommendations = []
-            for line in recommendations_text.split('\n'):
+            lines = recommendations_text.split('\n')
+            
+            # Filter out introductory text and keep only actual recommendations
+            for line in lines:
                 line = line.strip()
                 if line and not line.startswith('#'):
-                    # Remove list markers like "1.", "-", "*"
+                    # Skip introductory sentences that contain "based on", "here are", etc.
+                    if any(phrase in line.lower() for phrase in [
+                        'based on the provided',
+                        'based on the following', 
+                        'here are',
+                        'recommendations to help',
+                        'personalized recommendations'
+                    ]):
+                        continue
+                    
+                    # Remove list markers like "1.", "-", "*", numbered lists
                     clean_line = line.lstrip('0123456789.-* ')
-                    if clean_line and len(clean_line.split()) <= 50:  # Max 50 words
+                    
+                    # Skip if it's just a number or empty after cleaning
+                    if clean_line and len(clean_line.split()) > 3 and len(clean_line.split()) <= 50:
                         recommendations.append(clean_line)
             
             return ToolResponse.success_response(recommendations[:5])  # Max 5 recommendations
@@ -359,3 +375,97 @@ Remember to be specific and actionable in your recommendations. If a file is ver
             
         except Exception as e:
             return ToolResponse.error_response(f"Failed to generate code review insights: {str(e)}")
+    
+    def analyze_commit_message_quality(self, commits_data: List[Dict[str, Any]]) -> ToolResponse:
+        """Analyze how well commit messages correspond to their actual changes.
+        
+        Args:
+            commits_data: List of commits with message, files changed, and diff stats
+            
+        Returns:
+            ToolResponse with commit message quality analysis
+        """
+        try:
+            if not commits_data:
+                return ToolResponse.success_response("No commits available for message quality analysis.")
+            
+            # Sample a subset of commits to analyze (to avoid token limits)
+            max_commits = 10
+            sample_commits = commits_data[:max_commits] if len(commits_data) > max_commits else commits_data
+            
+            # Prepare analysis data
+            commit_analysis = []
+            for commit in sample_commits:
+                commit_hash = commit.get('hash', 'unknown')[:8]  # Short hash
+                message = commit.get('message', 'No message')
+                files_changed = commit.get('files_changed', [])
+                diff_stats = commit.get('diff_stats', {})
+                
+                # Summarize file changes
+                files_summary = []
+                for file_info in files_changed[:5]:  # Top 5 files to avoid token overflow
+                    filename = file_info.get('filename', 'unknown')
+                    additions = file_info.get('additions', 0)
+                    deletions = file_info.get('deletions', 0)
+                    files_summary.append({
+                        'file': filename,
+                        'changes': f"+{additions}/-{deletions}"
+                    })
+                
+                commit_analysis.append({
+                    'hash': commit_hash,
+                    'message': message,
+                    'files_summary': files_summary,
+                    'total_files': diff_stats.get('files_changed', 0),
+                    'total_changes': diff_stats.get('total_changes', 0)
+                })
+            
+            prompt = f"""As a senior developer performing code review, analyze how well each commit message describes the actual changes made. Rate the quality of commit messages based on:
+
+**Evaluation Criteria:**
+1. **Descriptiveness**: Does the message clearly explain what was changed?
+2. **Accuracy**: Does the message match the actual files and scope of changes?
+3. **Convention**: Does it follow good commit message practices (imperative mood, proper scope)?
+4. **Completeness**: Does it capture the essence of what was modified?
+
+**Commit Analysis Data:**
+"""
+            
+            for i, commit in enumerate(commit_analysis, 1):
+                prompt += f"""
+**Commit {i}:** {commit['hash']}
+**Message:** "{commit['message']}"
+**Changes:** {commit['total_files']} files, {commit['total_changes']} lines
+**Files Modified:** {', '.join([f"{f['file']} ({f['changes']})" for f in commit['files_summary']])}
+{'...' if len(commits_data) > len(commit['files_summary']) else ''}
+
+"""
+            
+            prompt += f"""
+**Analysis Instructions:**
+- For each commit, provide a quality score (1-5 scale where 5 is excellent)
+- Briefly explain your reasoning for the score
+- Identify patterns across commits (good practices or areas for improvement)
+- Provide 2-3 actionable recommendations for better commit messages
+
+**Example Analysis Format:**
+### Commit 1 (abc123): Score 3/5
+**Reasoning:** Message is vague ("fix bug") but changes suggest specific form validation fixes. Should be more specific about what was fixed.
+
+### Summary & Recommendations:
+1. Use more descriptive verbs and specific details
+2. Include the component or feature being modified
+3. Follow conventional commit format when possible
+
+Be concise but specific in your analysis. Focus on how well messages communicate the intent and scope of changes."""
+
+            # Generate analysis
+            message = HumanMessage(content=prompt)
+            response = self.llm.invoke([message])
+            
+            analysis = response.content.strip()
+            
+            return ToolResponse.success_response(analysis)
+            
+        except Exception as e:
+            return ToolResponse.error_response(f"Failed to analyze commit message quality: {str(e)}")

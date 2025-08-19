@@ -258,7 +258,13 @@ class UserAnalysisTool:
             'eslint.config.*',
             '.eslintrc*',
             'tsconfig.json',
-            'jsconfig.json'
+            'jsconfig.json',
+            
+            # Projen-generated files and directories
+            '.projen/',
+            '.projenrc.py',
+            '.projenrc.js',
+            '.projenrc.ts'
         ]
         
         for commit in commits:

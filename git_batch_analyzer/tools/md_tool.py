@@ -392,8 +392,8 @@ class MdTool:
             recommendations = user_stats.get('recommendations', [])
             if recommendations:
                 rec_section = "**Personalized Recommendations:**\n"
-                for i, rec in enumerate(recommendations, 1):
-                    rec_section += f"{i}. {rec}\n"
+                for rec in recommendations:
+                    rec_section += f"- {rec}\n"
                 
                 sections.append(rec_section.strip())
             
@@ -420,31 +420,67 @@ class MdTool:
             period_days: Analysis period in days
             
         Returns:
-            Formatted filename: repo(branch)dateFrom-dateTo.md
+            Formatted filename: {sysdate in yyyymmdd hh:mm}:repoName[{branchName}]-{periodStart in yyyymmdd}:{periodEnd in yyyymmdd}.md
         """
         from datetime import datetime, timedelta
         import re
+        
+        # Current system date with time
+        sys_date = datetime.now().strftime("%Y%m%d%H%M")
         
         # Calculate date range
         end_date = datetime.now()
         start_date = end_date - timedelta(days=period_days)
         
         # Format dates as YYYYMMDD
-        from_date = start_date.strftime("%Y%m%d")
-        to_date = end_date.strftime("%Y%m%d")
+        period_start = start_date.strftime("%Y%m%d")
+        period_end = end_date.strftime("%Y%m%d")
         
         # Parse repo_name to extract repo and branch
-        # Expected format: "repo-name-branch" or just "repo-name"
-        if '-' in repo_name:
-            # Split on last dash to separate repo from branch
-            parts = repo_name.rsplit('-', 1)
-            if len(parts) == 2:
-                repo_part, branch_part = parts
-                # Clean parts for filename (remove invalid characters)
-                clean_repo = re.sub(r'[^\w\-_.]', '_', repo_part)
-                clean_branch = re.sub(r'[^\w\-_.]', '_', branch_part)
-                return f"{clean_repo}({clean_branch}){from_date}-{to_date}.md"
+        # Expected format: "repo-name-branch" where branch can contain dashes
+        # Need to find the original repo name and branch separation
         
-        # If no branch detected, use whole name as repo
-        clean_repo_name = re.sub(r'[^\w\-_.]', '_', repo_name)
-        return f"{clean_repo_name}{from_date}-{to_date}.md"
+        # Try to find known repository patterns and split appropriately
+        # This is a heuristic - we look for common repo name patterns
+        repo_part = repo_name
+        branch_part = ""
+        
+        # Common repository name patterns (jobs, api, service, etc.)
+        common_patterns = ['-jobs-', '-api-', '-service-', '-app-', '-web-', '-backend-', '-frontend-']
+        
+        for pattern in common_patterns:
+            if pattern in repo_name:
+                # Find the pattern and assume everything after it is the branch
+                pattern_pos = repo_name.find(pattern)
+                if pattern_pos != -1:
+                    # Include the pattern in the repo name
+                    end_of_pattern = pattern_pos + len(pattern) - 1  # -1 to keep the dash in repo name
+                    # Look for the next dash after the pattern to separate repo from branch
+                    remaining = repo_name[end_of_pattern:]
+                    if '-' in remaining:
+                        next_dash = remaining.find('-')
+                        repo_part = repo_name[:end_of_pattern + next_dash]
+                        branch_part = repo_name[end_of_pattern + next_dash + 1:]
+                        break
+        
+        # If no pattern found, fall back to simpler heuristic
+        if branch_part == "" and '-' in repo_name:
+            # Try to detect if this looks like a combined repo-branch name
+            # by looking for typical branch prefixes
+            branch_prefixes = ['feature', 'bugfix', 'hotfix', 'release', 'develop', 'main', 'master']
+            for prefix in branch_prefixes:
+                pattern = f'-{prefix}'
+                if pattern in repo_name:
+                    split_pos = repo_name.find(pattern)
+                    repo_part = repo_name[:split_pos]
+                    branch_part = repo_name[split_pos + 1:]
+                    break
+        
+        # Clean parts for filename (remove invalid characters)
+        clean_repo = re.sub(r'[^\w\-_.]', '_', repo_part)
+        clean_branch = re.sub(r'[^\w\-_.]', '_', branch_part) if branch_part else ""
+        
+        if clean_branch:
+            return f"{sys_date}:{clean_repo}[{clean_branch}]-{period_start}:{period_end}.md"
+        else:
+            return f"{sys_date}:{clean_repo}[]-{period_start}:{period_end}.md"

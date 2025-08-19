@@ -562,7 +562,8 @@ def assembler_node(state: AnalysisState) -> Dict[str, Any]:
         if not (state["tables_completed"] and 
                 state["exec_summary_completed"] and 
                 state["org_trend_completed"] and
-                state["user_analysis_completed"]):
+                state["user_analysis_completed"] and
+                state["commit_quality_completed"]):
             state["errors"].append("Cannot assemble report: not all sections completed")
             return {"assembler_completed": False, "errors": state["errors"]}
         
@@ -599,12 +600,30 @@ def assembler_node(state: AnalysisState) -> Dict[str, Any]:
             if trends_section_response.success:
                 sections.append(trends_section_response.data)
         
+        # 4. Commit Message Quality Analysis (if available)
+        if state["commit_quality_analysis"]:
+            quality_section_response = md_tool.render_section(
+                "Commit Message Quality Analysis", 
+                state["commit_quality_analysis"], 
+                level=4
+            )
+            if quality_section_response.success:
+                sections.append(quality_section_response.data)
+        
         # 4. Add report header
         report_title = f"### Git Analysis Report - {state['repository_name']}"
-        from datetime import datetime
+        from datetime import datetime, timedelta
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
         actual_branch = state.get("actual_branch", state["branch"])
-        report_header = f"{report_title}\n\n**Generated on:** {timestamp}  \n**Analyzed Branch:** {actual_branch}"
+        
+        # Add analyzed period information
+        config = state["config"]
+        period_days = config.get("period_days", 7)
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=period_days)
+        period_text = f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} ({period_days} days)"
+        
+        report_header = f"{report_title}\n\n**Generated on:** {timestamp}  \n**Analyzed Branch:** {actual_branch}  \n**Analyzed Period:** {period_text}"
         
         # Combine all sections with header
         all_sections = [report_header] + sections
@@ -780,3 +799,99 @@ def user_analysis_node(state: AnalysisState) -> Dict[str, Any]:
     except Exception as e:
         state["errors"].append(f"User analysis node error: {str(e)}")
         return {"user_analysis_completed": False, "errors": state["errors"]}
+
+
+def commit_quality_node(state: AnalysisState) -> Dict[str, Any]:
+    """Node for analyzing commit message quality using LLM.
+    
+    This node handles:
+    - Gathering commit data with diff information
+    - Analyzing how well commit messages describe actual changes
+    - Generating recommendations for better commit practices
+    
+    Args:
+        state: Current analysis state
+        
+    Returns:
+        Updated state with commit message quality analysis
+    """
+    try:
+        if not state["collect_completed"]:
+            state["errors"].append("Cannot analyze commit quality: data collection not completed")
+            return {"commit_quality_completed": False, "errors": state["errors"]}
+        
+        config = state["config"]
+        llm_config = config.get("llm")
+        
+        # Skip commit quality analysis if LLM is disabled
+        if not llm_config or not llm_config.get("enabled", True):
+            return {
+                "commit_quality_analysis": None,
+                "commit_quality_completed": True
+            }
+        
+        git_tool = GitTool(state["cache_path"])
+        all_commits = state.get("all_commits", [])
+        
+        # Skip if no commits to analyze
+        if not all_commits:
+            return {
+                "commit_quality_analysis": "No commits available for quality analysis.",
+                "commit_quality_completed": True
+            }
+        
+        # Gather detailed commit data with diff information
+        commits_with_diffs = []
+        max_commits_to_analyze = 15  # Limit to avoid overwhelming LLM
+        
+        for i, commit in enumerate(all_commits[:max_commits_to_analyze]):
+            commit_hash = commit.get('hash')
+            if not commit_hash:
+                continue
+                
+            # Get diff stats for this commit
+            diff_response = git_tool.diff_stats(commit_hash)
+            diff_stats = diff_response.data if diff_response.success else {}
+            
+            # Get files changed in this commit
+            files_response = git_tool.get_commit_files(commit_hash)
+            files_changed = files_response.data if files_response.success else []
+            
+            commit_data = {
+                'hash': commit_hash,
+                'message': commit.get('message', ''),
+                'author_name': commit.get('author_name', ''),
+                'diff_stats': diff_stats,
+                'files_changed': files_changed
+            }
+            commits_with_diffs.append(commit_data)
+        
+        # Initialize LLM tool
+        try:
+            llm_tool = LLMTool(
+                provider=llm_config.get("provider", "openai"),
+                model=llm_config.get("model", "gpt-3.5-turbo"),
+                temperature=llm_config.get("temperature", 0.7),
+                api_key=llm_config.get("api_key"),
+                base_url=llm_config.get("base_url"),
+                max_tokens=llm_config.get("max_tokens")
+            )
+        except Exception as e:
+            state["errors"].append(f"Failed to initialize LLM tool: {str(e)}")
+            return {"commit_quality_completed": False, "errors": state["errors"]}
+        
+        # Analyze commit message quality
+        quality_response = llm_tool.analyze_commit_message_quality(commits_with_diffs)
+        
+        if not quality_response.success:
+            state["errors"].append(f"Failed to analyze commit quality: {quality_response.error}")
+            return {"commit_quality_completed": False, "errors": state["errors"]}
+        
+        return {
+            "commit_quality_analysis": quality_response.data,
+            "commit_quality_completed": True
+        }
+        
+    except Exception as e:
+        state["errors"].append(f"Commit quality node error: {str(e)}")
+        return {"commit_quality_completed": False, "errors": state["errors"]}

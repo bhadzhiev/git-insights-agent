@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Union, Optional
 from urllib.parse import urlparse
-from .models import AnalysisConfig, RepositoryConfig, LLMConfig
+from .models import AnalysisConfig, RepositoryConfig, LLMConfig, EmailConfig
 
 
 class ConfigurationError(Exception):
@@ -129,6 +129,16 @@ def _parse_config_dict(config_dict: Dict[str, Any]) -> AnalysisConfig:
             llm_config = _parse_llm_config(llm_data)
         else:
             raise ConfigurationError("'llm' must be a dictionary or null")
+
+    # Parse Email configuration if present
+    email_config = None
+    if 'email' in config_dict:
+        email_data = config_dict['email']
+        if email_data is not None:
+            if isinstance(email_data, dict):
+                email_config = _parse_email_config(email_data)
+            else:
+                raise ConfigurationError("'email' must be a dictionary")
     
     # Build configuration with validated parameters
     try:
@@ -140,7 +150,8 @@ def _parse_config_dict(config_dict: Dict[str, Any]) -> AnalysisConfig:
             stale_days=stale_days,
             fetch_depth=fetch_depth,
             top_k_files=top_k_files,
-            llm=llm_config
+            llm=llm_config,
+            email=email_config
         )
     except Exception as e:
         raise ConfigurationError(f"Error creating configuration: {e}")
@@ -200,6 +211,54 @@ def _parse_path_param(config_dict: Dict[str, Any], key: str, default: Path, para
         return Path(value)
     except Exception as e:
         raise ConfigurationError(f"'{param_name}' is not a valid path: {e}")
+
+
+def _parse_email_config(email_data: Dict[str, Any]) -> EmailConfig:
+    """Parse email configuration dictionary."""
+    sender_email = email_data.get('sender_email')
+    sender_name = email_data.get('sender_name', 'Git Batch Analyzer')
+    provider = email_data.get('provider', 'smtp').lower()
+    
+    # Common fields
+    api_key = email_data.get('api_key')
+    api_secret = email_data.get('api_secret')
+    
+    # SMTP-specific fields
+    smtp_server = email_data.get('smtp_server')
+    smtp_port = email_data.get('smtp_port', 587)
+    smtp_password = email_data.get('smtp_password') or api_secret
+
+    # Validate required fields
+    if not sender_email or not isinstance(sender_email, str):
+        raise ConfigurationError("Email 'sender_email' must be a non-empty string")
+    if not isinstance(sender_name, str):
+        raise ConfigurationError("Email 'sender_name' must be a string")
+    
+    if provider not in ['smtp', 'mailjet']:
+        raise ConfigurationError("Email 'provider' must be either 'smtp' or 'mailjet'")
+    
+    # Provider-specific validation
+    if provider == 'mailjet':
+        if not api_key or not isinstance(api_key, str):
+            raise ConfigurationError("Mailjet provider requires 'api_key'")
+        if not api_secret or not isinstance(api_secret, str):
+            raise ConfigurationError("Mailjet provider requires 'api_secret'")
+    
+    elif provider == 'smtp':
+        if not smtp_server or not isinstance(smtp_server, str):
+            raise ConfigurationError("SMTP provider requires 'smtp_server'")
+        # Allow SMTP relays without authentication (smtp_password optional)
+
+    return EmailConfig(
+        sender_email=sender_email,
+        sender_name=sender_name,
+        provider=provider,
+        api_key=api_key,
+        api_secret=api_secret,
+        smtp_server=smtp_server,
+        smtp_port=smtp_port,
+        smtp_password=smtp_password
+    )
 
 
 def _parse_llm_config(llm_data: Dict[str, Any]) -> LLMConfig:

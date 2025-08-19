@@ -4,12 +4,15 @@ import logging
 import sys
 from pathlib import Path
 from typing import Dict, Any, List
+from datetime import datetime, timedelta
 
 import click
 
 from .config.loader import load_config_from_yaml, ConfigurationError
-from .config.models import AnalysisConfig
+from .config.models import AnalysisConfig, EmailConfig
 from .workflow.graph import process_repositories
+from .tools.email_tool import EmailTool
+from .tools.git_tool import GitTool
 
 
 # Configure logging
@@ -56,6 +59,11 @@ logger = logging.getLogger(__name__)
     is_flag=True,
     help='Validate configuration and show what would be processed without running analysis'
 )
+@click.option(
+    '--send-email',
+    is_flag=True,
+    help='Send the report to committers via email.'
+)
 def cli(
     config_file: Path,
     verbose: bool,
@@ -63,7 +71,8 @@ def cli(
     cache_dir: Path,
     period_days: int,
     max_workers: int,
-    dry_run: bool
+    dry_run: bool,
+    send_email: bool
 ) -> None:
     """
     Git Batch Analyzer - Analyze multiple git repositories and generate development metrics reports.
@@ -112,6 +121,20 @@ def cli(
         
         # Log summary
         _log_final_summary(results, config.output_file)
+
+        if send_email:
+            if not config.email:
+                click.echo("Email configuration is missing in the config file.", err=True)
+                logger.error("Email configuration is missing.")
+                sys.exit(1)
+
+            if not config.output_file.exists():
+                click.echo(f"Report file not found: {config.output_file}", err=True)
+                logger.error(f"Report file not found: {config.output_file}")
+                sys.exit(1)
+
+            # Send individual reports to each repository's committers
+            _send_individual_repo_emails(config, results)
         
     except ConfigurationError as e:
         click.echo(f"Configuration error: {e}", err=True)
@@ -462,6 +485,349 @@ def _log_final_summary(results: Dict[str, Any], output_file: Path) -> None:
             logger.warning(f"  - {repo_result['name']}: {repo_result['url']}")
     
     logger.info("="*60)
+
+
+def _prepare_email_content(config: AnalysisConfig, results: Dict[str, Any]) -> str:
+    """Prepare HTML email content by combining all individual reports."""
+    import markdown
+    from git_batch_analyzer.tools.md_tool import MdTool
+    
+    # Start with email header
+    from_date = (datetime.now() - timedelta(days=config.period_days)).strftime("%Y-%m-%d")
+    to_date = datetime.now().strftime("%Y-%m-%d")
+    
+    email_content = f"""# Git Development Activity Report
+
+**Period:** {config.period_days} days ({from_date} to {to_date})  
+**Generated:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+---
+
+"""
+    
+    # Add individual repository reports
+    md_tool = MdTool()
+    active_repos = 0
+    
+    for repo_result in results["successful_repositories"]:
+        final_state = repo_result["final_state"]
+        
+        # Check if repository has activity
+        pr_metrics = final_state.get("pr_metrics", {})
+        total_prs = pr_metrics.get("total_prs", 0)
+        all_commits = final_state.get("all_commits", [])
+        total_commits = len(all_commits)
+        
+        if total_prs > 0 or total_commits > 0:
+            active_repos += 1
+            # Generate the report filename
+            repo_filename = md_tool.generate_report_filename(repo_result["name"], config.period_days)
+            report_path = Path("reports") / repo_filename
+            
+            # Try to read the individual report
+            try:
+                if report_path.exists():
+                    with open(report_path, 'r', encoding='utf-8') as f:
+                        report_markdown = f.read()
+                    email_content += f"\n\n{report_markdown}\n\n---\n"
+                else:
+                    # If report file doesn't exist, create a minimal section
+                    branch = final_state.get("actual_branch", "unknown")
+                    email_content += f"""
+## {repo_result['name']} ({branch})
+
+**Activity Summary:**
+- PRs: {total_prs}
+- Commits: {total_commits}
+- Branch: {branch}
+
+*Detailed report not available*
+
+---
+"""
+            except Exception as e:
+                logger.warning(f"Failed to read report for {repo_result['name']}: {e}")
+                continue
+    
+    # Add summary at the end
+    inactive_count = len([r for r in results["successful_repositories"] 
+                         if not (r["final_state"].get("pr_metrics", {}).get("total_prs", 0) > 0 
+                                or len(r["final_state"].get("all_commits", [])) > 0)])
+    
+    email_content += f"""
+
+## Summary
+
+- **Active repositories:** {active_repos} (with development activity)
+- **Inactive repositories:** {inactive_count} (no activity in analysis period)
+- **Failed repositories:** {len(results["failed_repositories"])}
+
+This report was automatically generated by Git Batch Analyzer.
+"""
+    
+    # Convert markdown to HTML
+    try:
+        html_content = markdown.markdown(
+            email_content,
+            extensions=['tables', 'codehilite', 'toc'],
+            extension_configs={
+                'codehilite': {
+                    'css_class': 'highlight'
+                }
+            }
+        )
+        
+        # Add basic CSS styling
+        styled_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1200px; margin: 0 auto; padding: 20px; }}
+        h1, h2, h3 {{ color: #2c3e50; }}
+        table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        th {{ background-color: #f2f2f2; }}
+        code {{ background-color: #f4f4f4; padding: 2px 4px; border-radius: 3px; }}
+        pre {{ background-color: #f4f4f4; padding: 10px; border-radius: 5px; overflow-x: auto; }}
+        .highlight {{ background-color: #f8f8f8; }}
+        hr {{ border: none; height: 1px; background-color: #ddd; margin: 20px 0; }}
+    </style>
+</head>
+<body>
+{html_content}
+</body>
+</html>
+"""
+        return styled_html
+        
+    except Exception as e:
+        logger.error(f"Failed to convert markdown to HTML: {e}")
+        # Fallback to plain text
+        return f"<html><body><pre>{email_content}</pre></body></html>"
+
+
+def _send_individual_repo_emails(config: AnalysisConfig, results: Dict[str, Any]) -> None:
+    """Send individual repository reports to each repository's committers."""
+    import markdown
+    from git_batch_analyzer.tools.md_tool import MdTool
+    
+    email_tool = EmailTool(
+        sender_email=config.email.sender_email,
+        sender_name=config.email.sender_name,
+        provider=config.email.provider,
+        api_key=config.email.api_key,
+        api_secret=config.email.api_secret,
+        smtp_server=config.email.smtp_server,
+        smtp_port=config.email.smtp_port,
+        smtp_password=config.email.smtp_password
+    )
+    
+    md_tool = MdTool()
+    emails_sent = 0
+    total_recipients = 0
+    
+    for repo_result in results["successful_repositories"]:
+        final_state = repo_result["final_state"]
+        
+        # Check if repository has activity
+        pr_metrics = final_state.get("pr_metrics", {})
+        total_prs = pr_metrics.get("total_prs", 0)
+        all_commits = final_state.get("all_commits", [])
+        total_commits = len(all_commits)
+        
+        # Only send emails for repositories with activity
+        if total_prs == 0 and total_commits == 0:
+            continue
+            
+        # Get committers for this specific repository and branch
+        repo_path = config.get_repo_cache_dir(repo_result["url"])
+        git_tool = GitTool(repo_path)
+        actual_branch = final_state.get("actual_branch", "unknown")
+        committers_response = git_tool.get_committers(config.period_days, branch=actual_branch)
+        
+        if not committers_response.success or not committers_response.data:
+            logger.warning(f"No committers found for {repo_result['name']}")
+            continue
+            
+        repo_committers = list(committers_response.data)
+        logger.info(f"Found {len(repo_committers)} committers for {repo_result['name']}")
+        
+        # Prepare individual report content for this repository
+        report_content = _prepare_individual_repo_email_content(config, repo_result, final_state, md_tool)
+        
+        # Send email to this repository's committers
+        repo_name = repo_result["name"]
+        branch = final_state.get("actual_branch", "unknown")
+        subject = f"Git Analysis Report: {repo_name} ({branch}) - {datetime.now().strftime('%Y-%m-%d')}"
+        
+        email_response = email_tool.send_email(
+            recipients=repo_committers,
+            subject=subject,
+            body=report_content
+        )
+        
+        if email_response.success:
+            emails_sent += 1
+            total_recipients += len(repo_committers)
+            click.echo(f"✓ Sent report for {repo_name} to {len(repo_committers)} committers")
+            logger.info(f"Successfully sent email report for {repo_name} to {repo_committers}")
+        else:
+            click.echo(f"✗ Failed to send report for {repo_name}: {email_response.error}", err=True)
+            logger.error(f"Failed to send email report for {repo_name}: {email_response.error}")
+    
+    # Final summary
+    if emails_sent > 0:
+        click.echo(f"\n✓ Successfully sent {emails_sent} individual reports to {total_recipients} total recipients")
+        logger.info(f"Successfully sent {emails_sent} individual reports to {total_recipients} total recipients")
+    else:
+        click.echo("No email reports were sent (no repositories with committers found)", err=True)
+        logger.warning("No email reports were sent")
+
+
+def _prepare_individual_repo_email_content(config: AnalysisConfig, repo_result: Dict[str, Any], final_state: Dict[str, Any], md_tool) -> str:
+    """Prepare HTML email content for a single repository."""
+    import markdown
+    
+    # Get repository info
+    repo_name = repo_result["name"]
+    branch = final_state.get("actual_branch", "unknown")
+    
+    # Start with email header for individual repo
+    from_date = (datetime.now() - timedelta(days=config.period_days)).strftime("%Y-%m-%d")
+    to_date = datetime.now().strftime("%Y-%m-%d")
+    
+    # Try to read the individual report file using stored filename
+    stored_report_filename = final_state.get("report_filename")
+    if stored_report_filename:
+        report_path = Path(stored_report_filename)
+        logger.debug(f"Using stored report path: {report_path}")
+    else:
+        # Fallback to generating filename if not stored
+        logger.debug("No stored report filename, generating new one")
+        repo_filename = md_tool.generate_report_filename(repo_name, config.period_days)
+        report_path = Path("reports") / repo_filename
+        logger.debug(f"Generated report path: {report_path}")
+    
+    logger.debug(f"Looking for report file at: {report_path}, exists: {report_path.exists()}")
+    
+    if report_path.exists():
+        try:
+            with open(report_path, 'r', encoding='utf-8') as f:
+                report_markdown = f.read()
+            
+            # Add email header to the report
+            email_content = f"""# Git Development Report: {repo_name}
+
+**Repository:** {repo_name}  
+**Branch:** {branch}  
+**Period:** {config.period_days} days ({from_date} to {to_date})  
+**Generated:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+---
+
+{report_markdown}
+
+---
+
+*This personalized report was automatically generated by Git Batch Analyzer and sent only to committers of this repository.*
+"""
+        except Exception as e:
+            logger.warning(f"Failed to read report file {report_path}: {e}")
+            # Fallback content
+            pr_metrics = final_state.get("pr_metrics", {})
+            total_prs = pr_metrics.get("total_prs", 0)
+            all_commits = final_state.get("all_commits", [])
+            total_commits = len(all_commits)
+            
+            email_content = f"""# Git Development Report: {repo_name}
+
+**Repository:** {repo_name}  
+**Branch:** {branch}  
+**Period:** {config.period_days} days ({from_date} to {to_date})  
+**Generated:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+## Activity Summary
+
+- **PRs:** {total_prs}
+- **Commits:** {total_commits}
+- **Branch:** {branch}
+
+*Detailed analysis report was not available.*
+
+---
+
+*This report was automatically generated by Git Batch Analyzer.*
+"""
+    else:
+        # Report file doesn't exist - create minimal content
+        pr_metrics = final_state.get("pr_metrics", {})
+        total_prs = pr_metrics.get("total_prs", 0)
+        all_commits = final_state.get("all_commits", [])
+        total_commits = len(all_commits)
+        
+        email_content = f"""# Git Development Report: {repo_name}
+
+**Repository:** {repo_name}  
+**Branch:** {branch}  
+**Period:** {config.period_days} days ({from_date} to {to_date})  
+**Generated:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+## Activity Summary
+
+- **PRs:** {total_prs}  
+- **Commits:** {total_commits}  
+- **Branch:** {branch}
+
+*Detailed report file not found: `{report_path}`*
+
+---
+
+*This report was automatically generated by Git Batch Analyzer.*
+"""
+    
+    # Convert markdown to HTML
+    try:
+        html_content = markdown.markdown(
+            email_content,
+            extensions=['tables', 'codehilite', 'toc'],
+            extension_configs={
+                'codehilite': {
+                    'css_class': 'highlight'
+                }
+            }
+        )
+        
+        # Add styling
+        styled_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1200px; margin: 0 auto; padding: 20px; }}
+        h1, h2, h3 {{ color: #2c3e50; }}
+        table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        th {{ background-color: #f2f2f2; }}
+        code {{ background-color: #f4f4f4; padding: 2px 4px; border-radius: 3px; }}
+        pre {{ background-color: #f4f4f4; padding: 10px; border-radius: 5px; overflow-x: auto; }}
+        .highlight {{ background-color: #f8f8f8; }}
+        hr {{ border: none; height: 1px; background-color: #ddd; margin: 20px 0; }}
+    </style>
+</head>
+<body>
+{html_content}
+</body>
+</html>
+"""
+        return styled_html
+        
+    except Exception as e:
+        logger.error(f"Failed to convert markdown to HTML for {repo_name}: {e}")
+        # Fallback to plain text
+        return f"<html><body><pre>{email_content}</pre></body></html>"
 
 
 if __name__ == "__main__":

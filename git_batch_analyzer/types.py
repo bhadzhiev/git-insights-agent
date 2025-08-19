@@ -180,6 +180,7 @@ class AnalysisState(TypedDict):
     executive_summary: Optional[str]
     tables_markdown: Optional[str]
     org_trends: Optional[str]
+    commit_quality_analysis: Optional[str]
     final_report: Optional[str]
     
     # Processing status
@@ -188,6 +189,7 @@ class AnalysisState(TypedDict):
     metrics_completed: bool
     stale_completed: bool
     user_analysis_completed: bool
+    commit_quality_completed: bool
     tables_completed: bool
     exec_summary_completed: bool
     org_trend_completed: bool
@@ -230,6 +232,7 @@ def create_initial_state(
         executive_summary=None,
         tables_markdown=None,
         org_trends=None,
+        commit_quality_analysis=None,
         final_report=None,
         
         # Processing status
@@ -238,6 +241,7 @@ def create_initial_state(
         metrics_completed=False,
         stale_completed=False,
         user_analysis_completed=False,
+        commit_quality_completed=False,
         tables_completed=False,
         exec_summary_completed=False,
         org_trend_completed=False,
