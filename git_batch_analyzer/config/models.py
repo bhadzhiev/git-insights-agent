@@ -26,19 +26,25 @@ class LLMConfig:
 
 @dataclass
 class EmailConfig:
-    """Configuration for sending email notifications."""
+    """Configuration for sending email notifications via SMTP."""
     sender_email: str
     sender_name: str = "Git Batch Analyzer"
-    provider: str = "smtp"  # 'smtp' or 'mailjet'
+    provider: str = "smtp"  # Must be 'smtp' (kept for compatibility)
     
-    # Common fields
-    api_key: Optional[str] = None  # Mailjet API key or SMTP username
-    api_secret: Optional[str] = None  # Mailjet API secret or SMTP password
+    # SMTP authentication
+    api_key: Optional[str] = None  # SMTP username (usually same as sender_email)
+    api_secret: Optional[str] = None  # SMTP password
     
-    # SMTP-specific fields
+    # SMTP server configuration
     smtp_server: Optional[str] = None  # e.g., smtp.gmail.com
     smtp_port: int = 587
     smtp_password: Optional[str] = None  # Alias for api_secret for clarity
+    
+    # Email mapping configuration
+    email_mappings: Optional[Dict[str, str]] = None  # Map from commit email to real email
+    
+    # Manager CC configuration
+    manager_email: Optional[str] = None  # Manager email to CC on all reports
 
 
 @dataclass

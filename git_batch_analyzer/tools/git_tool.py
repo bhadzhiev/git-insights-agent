@@ -83,9 +83,12 @@ class GitTool:
 
         try:
             result = subprocess.run(
-                cmd, cwd=work_dir, capture_output=True, text=True, check=True
+                cmd, cwd=work_dir, capture_output=True, text=True, check=True, timeout=60
             )
             return ToolResponse.success_response(result.stdout.strip())
+        except subprocess.TimeoutExpired as e:
+            error_msg = f"Git command timed out after 60 seconds: {' '.join(cmd)}"
+            return ToolResponse.error_response(error_msg)
         except subprocess.CalledProcessError as e:
             error_msg = f"Git command failed: {' '.join(cmd)}\nError: {e.stderr}"
             return ToolResponse.error_response(error_msg)
@@ -120,7 +123,7 @@ class GitTool:
 
         try:
             result = subprocess.run(
-                ["git"] + args, capture_output=True, text=True, check=True
+                ["git"] + args, capture_output=True, text=True, check=True, timeout=300
             )
             return ToolResponse.success_response(
                 {
@@ -129,6 +132,9 @@ class GitTool:
                     "depth": depth,
                 }
             )
+        except subprocess.TimeoutExpired as e:
+            error_msg = f"Clone operation timed out after 5 minutes: {url}"
+            return ToolResponse.error_response(error_msg)
         except subprocess.CalledProcessError as e:
             error_msg = f"Failed to clone {url}: {e.stderr}"
             return ToolResponse.error_response(error_msg)

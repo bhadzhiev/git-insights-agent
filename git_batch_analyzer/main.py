@@ -621,14 +621,16 @@ def _send_individual_repo_emails(config: AnalysisConfig, results: Dict[str, Any]
         api_secret=config.email.api_secret,
         smtp_server=config.email.smtp_server,
         smtp_port=config.email.smtp_port,
-        smtp_password=config.email.smtp_password
+        smtp_password=config.email.smtp_password,
+        email_mappings=config.email.email_mappings,
+        manager_email=config.email.manager_email
     )
     
     md_tool = MdTool()
     emails_sent = 0
     total_recipients = 0
     
-    for repo_result in results["successful_repositories"]:
+    for repo_index, repo_result in enumerate(results["successful_repositories"]):
         final_state = repo_result["final_state"]
         
         # Check if repository has activity
@@ -676,6 +678,12 @@ def _send_individual_repo_emails(config: AnalysisConfig, results: Dict[str, Any]
         else:
             click.echo(f"✗ Failed to send report for {repo_name}: {email_response.error}", err=True)
             logger.error(f"Failed to send email report for {repo_name}: {email_response.error}")
+        
+        # Repository-level rate limiting: pause between repository email sends to avoid overwhelming SMTP servers
+        if repo_index < len(results["successful_repositories"]) - 1:  # Don't sleep after the last repository
+            import time
+            time.sleep(2)  # 2-second pause between repositories
+            logger.debug(f"Pausing 2 seconds before processing next repository...")
     
     # Final summary
     if emails_sent > 0:
